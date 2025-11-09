@@ -10,6 +10,7 @@ use App\Models\AccountLedger;
 use App\Models\LedgerTransaction;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 class SupplierManagement extends Component
 {
@@ -404,8 +405,7 @@ class SupplierManagement extends Component
         }
     }
 
-
-    // Add the Add Transaction tab content
+    // Add a new ledger transaction for the selected supplier
     public function addTransaction()
     {
         $this->validate([
@@ -417,36 +417,50 @@ class SupplierManagement extends Component
         ]);
 
         if ($this->selectedSupplier && $this->selectedSupplier->ledger) {
-            $ledger = $this->selectedSupplier->ledger;
+            DB::transaction(function () {
+                $ledger = $this->selectedSupplier->ledger;
 
-            // Determine debit/credit based on transaction type
-            $debitAmount = 0;
-            $creditAmount = 0;
+                // Determine debit/credit based on transaction type
+                $debitAmount = 0;
+                $creditAmount = 0;
 
-            switch ($this->newTransaction['type']) {
-                case 'purchase':
-                    $debitAmount = $this->newTransaction['amount']; // Increase supplier balance
-                    break;
-                case 'payment':
-                    $creditAmount = $this->newTransaction['amount']; // Decrease supplier balance
-                    break;
-                case 'return':
-                    $creditAmount = $this->newTransaction['amount']; // Decrease supplier balance
-                    break;
-                case 'adjustment':
-                    $debitAmount = $this->newTransaction['amount']; // Adjust balance
-                    break;
-            }
+                switch ($this->newTransaction['type']) {
+                    case 'purchase':
+                        $debitAmount = $this->newTransaction['amount']; // Increase supplier balance (you owe more)
+                        break;
+                    case 'payment':
+                        $creditAmount = $this->newTransaction['amount']; // Decrease supplier balance (you paid)
+                        break;
+                    case 'return':
+                        $creditAmount = $this->newTransaction['amount']; // Decrease supplier balance (returned goods)
+                        break;
+                    case 'adjustment':
+                        // For adjustments, determine if it's debit or credit based on amount sign
+                        if ($this->newTransaction['amount'] >= 0) {
+                            $debitAmount = $this->newTransaction['amount'];
+                        } else {
+                            $creditAmount = abs($this->newTransaction['amount']);
+                        }
+                        break;
+                }
 
-            // Create transaction
-            $ledger->transactions()->create([
-                'date' => $this->newTransaction['date'],
-                'type' => $this->newTransaction['type'],
-                'description' => $this->newTransaction['description'],
-                'debit_amount' => $debitAmount,
-                'credit_amount' => $creditAmount,
-                'reference' => $this->newTransaction['reference'],
-            ]);
+                // Create transaction
+                $ledger->transactions()->create([
+                    'date' => $this->newTransaction['date'],
+                    'type' => $this->newTransaction['type'],
+                    'description' => $this->newTransaction['description'],
+                    'debit_amount' => $debitAmount,
+                    'credit_amount' => $creditAmount,
+                    'reference' => $this->newTransaction['reference'],
+                    'referenceable_type' => null, // Manual entry, no source document
+                    'referenceable_id' => null,
+                ]);
+
+                // Update ledger current balance
+                // For supplier ledger: Debit increases balance (you owe), Credit decreases balance (you paid)
+                $ledger->current_balance += ($debitAmount - $creditAmount);
+                $ledger->save();
+            });
 
             // Reset form
             $this->reset('newTransaction');
@@ -463,6 +477,7 @@ class SupplierManagement extends Component
             $this->success('Transaction added successfully!');
         }
     }
+
 
     public function calculateStatistics()
     {

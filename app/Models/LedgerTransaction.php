@@ -6,9 +6,16 @@ use Illuminate\Database\Eloquent\Model;
 
 class LedgerTransaction extends Model
 {
-protected $fillable = [
-        'ledger_id', 'date', 'type', 'description', 
-        'debit_amount', 'credit_amount', 'reference'
+    protected $fillable = [
+        'ledger_id',
+        'date',
+        'type',
+        'description',
+        'debit_amount',
+        'credit_amount',
+        'reference',
+        'referenceable_id',
+        'referenceable_type',
     ];
 
     protected $casts = [
@@ -21,6 +28,11 @@ protected $fillable = [
     {
         return $this->belongsTo(AccountLedger::class, 'ledger_id');
     }
+    
+    public function referenceable()
+    {
+        return $this->morphTo();
+    }
 
     // Boot method to update ledger balance on create/update/delete
     protected static function boot()
@@ -29,7 +41,7 @@ protected $fillable = [
 
         static::created(function ($transaction) {
             $transaction->ledger->updateBalance(
-                $transaction->debit_amount, 
+                $transaction->debit_amount,
                 $transaction->credit_amount
             );
         });

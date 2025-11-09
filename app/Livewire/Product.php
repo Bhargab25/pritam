@@ -5,6 +5,7 @@ namespace App\Livewire;
 use Livewire\Component;
 use App\Models\Product as Products;
 use App\Models\ProductCategory;
+use App\Models\StockMovement;
 use Livewire\WithPagination;
 use Mary\Traits\Toast;
 use Illuminate\Support\Facades\DB;
@@ -149,7 +150,7 @@ class Product extends Component
             }
         } else {
             // Create
-            Products::create([
+            $product = Products::create([
                 'name' => $this->name,
                 'category_id' => $this->category_id,
                 'unit' => $this->unit,
@@ -157,6 +158,19 @@ class Product extends Component
                 'min_stock_quantity' => $this->min_stock_quantity,
                 'is_active' => $this->is_active,
             ]);
+
+            // Record initial stock movement if stock quantity > 0
+            if ($this->stock_quantity > 0) {
+                StockMovement::create([
+                    'product_id' => $product->id,
+                    'type' => 'in',
+                    'quantity' => $this->stock_quantity,
+                    'reason' => 'Initial stock',
+                    'reference_type' => 'App\Models\Product',
+                    'reference_id' => $product->id,
+                ]);
+            }
+
             $this->success('Product Created!', 'The product has been added successfully.');
         }
 

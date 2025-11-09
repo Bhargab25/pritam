@@ -20,6 +20,10 @@ return new class extends Migration
             $table->decimal('debit_amount', 15, 2)->default(0);
             $table->decimal('credit_amount', 15, 2)->default(0);
             $table->string('reference')->nullable();
+            
+            // Polymorphic relation to link back to source (Challan, Invoice, etc.)
+            $table->nullableMorphs('referenceable');
+            
             $table->timestamps();
         });
     }

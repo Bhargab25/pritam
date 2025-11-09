@@ -18,6 +18,7 @@ use App\Exports\StockReportExport;
 use Illuminate\Container\Attributes\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Livewire\Attributes\Computed;
 
 class InventoryManagent extends Component
 {
@@ -129,6 +130,16 @@ class InventoryManagent extends Component
         $this->resetPage();
     }
 
+    #[Computed]
+    public function totalAmount()
+    {
+        return collect($this->stockItems)->sum(function ($item) {
+            $quantity = (float)($item['quantity'] ?? 0);
+            $price = (float)($item['price'] ?? 0);
+            return $quantity * $price;
+        });
+    }
+
     // Modal Methods
     public function openAddStockModal()
     {
@@ -176,6 +187,8 @@ class InventoryManagent extends Component
                     'remarks' => $this->remarks,
                 ]);
 
+                $totalAmount = 0;
+
                 // Create Challan Items and Stock Movements
                 foreach ($this->stockItems as $item) {
                     $challanItem = ChallanItem::create([
@@ -184,6 +197,11 @@ class InventoryManagent extends Component
                         'quantity' => $item['quantity'],
                         'price' => $item['price'] ?: null,
                     ]);
+
+                    // Calculate total amount
+                    if ($item['price']) {
+                        $totalAmount += $item['quantity'] * $item['price'];
+                    }
 
                     // Update product stock
                     $product = Product::find($item['product_id']);
@@ -199,6 +217,28 @@ class InventoryManagent extends Component
                         'reference_type' => ChallanItem::class,
                         'reference_id' => $challanItem->id,
                     ]);
+                }
+
+                // Create supplier ledger transaction if supplier is selected and total amount > 0
+                if ($this->supplierId && $totalAmount > 0) {
+                    $supplier = Supplier::find($this->supplierId);
+
+                    if ($supplier) {
+                        // Get or create ledger for supplier
+                        $ledger = $supplier->getOrCreateLedger();
+
+                        // Create purchase transaction (debit - increases supplier balance)
+                        $ledger->transactions()->create([
+                            'date' => $this->challanDate,
+                            'type' => 'purchase',
+                            'description' => 'Purchase via Challan #' . $this->challanNumber,
+                            'debit_amount' => $totalAmount,
+                            'credit_amount' => 0,
+                            'reference' => $this->challanNumber,
+                            'referenceable_type' => Challan::class,
+                            'referenceable_id' => $challan->id,
+                        ]);
+                    }
                 }
             });
 

@@ -420,7 +420,7 @@
                     <div class="col-span-5">
                         <x-mary-select
                             label="Product"
-                            wire:model="stockItems.{{ $index }}.product_id"
+                            wire:model.live="stockItems.{{ $index }}.product_id"
                             :options="$allProducts"
                             option-value="id"
                             option-label="name"
@@ -430,10 +430,10 @@
                     </div>
 
                     <!-- Quantity -->
-                    <div class="col-span-3">
+                    <div class="col-span-2">
                         <x-mary-input
                             label="Quantity"
-                            wire:model="stockItems.{{ $index }}.quantity"
+                            wire:model.live="stockItems.{{ $index }}.quantity"
                             type="number"
                             step="0.01"
                             placeholder="0.00"
@@ -442,15 +442,25 @@
                     </div>
 
                     <!-- Price (Optional) -->
-                    <div class="col-span-3">
+                    <div class="col-span-2">
                         <x-mary-input
-                            label="Price (Optional)"
-                            wire:model="stockItems.{{ $index }}.price"
+                            label="Unit Price"
+                            wire:model.live="stockItems.{{ $index }}.price"
                             type="number"
                             step="0.01"
                             placeholder="0.00"
                             prefix="₹"
                             icon="o-currency-rupee" />
+                    </div>
+
+                    <!-- Line Total -->
+                    <div class="col-span-2">
+                        <x-mary-input
+                            label="Line Total"
+                            value="{{ number_format((float)($item['quantity'] ?? 0) * (float)($item['price'] ?? 0), 2) }}"
+                            readonly
+                            prefix="₹"
+                            class="font-semibold" />
                     </div>
 
                     <!-- Remove Button -->
@@ -464,6 +474,16 @@
                     </div>
                 </div>
                 @endforeach
+
+                <!-- Total Amount Display -->
+                <div class="flex justify-end p-4 bg-primary/10 rounded-lg border-2 border-primary">
+                    <div class="text-right">
+                        <p class="text-sm text-gray-600 dark:text-gray-400">Total Amount</p>
+                        <p class="text-3xl font-bold text-primary">
+                            ₹{{ number_format($this->totalAmount, 2) }}
+                        </p>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -478,6 +498,7 @@
                 @click="$wire.saveStock()" />
         </x-slot:actions>
     </x-mary-modal>
+
 
 
     <!-- Product History Modal -->
