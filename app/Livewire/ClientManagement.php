@@ -7,9 +7,12 @@ use Livewire\WithPagination;
 use Mary\Traits\Toast;
 use App\Models\Client;
 use App\Models\AccountLedger;
+use App\Models\CompanyBankAccount;
 use App\Models\LedgerTransaction;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
+use App\Models\Invoice;
+use Illuminate\Support\Facades\DB;
 
 class ClientManagement extends Component
 {
@@ -91,7 +94,9 @@ class ClientManagement extends Component
         'type' => 'sale',
         'description' => '',
         'amount' => 0,
-        'reference' => ''
+        'reference' => '',
+        'payment_method' => 'cash',
+        'bank_account_id' => null,
     ];
 
     public $transactionFilterOptions = [
@@ -117,11 +122,13 @@ class ClientManagement extends Component
 
         // Initialize new transaction
         $this->newTransaction = [
-            'date' => now()->format('Y-m-d'),
+            'date' => '',
             'type' => 'sale',
             'description' => '',
             'amount' => 0,
-            'reference' => ''
+            'reference' => '',
+            'payment_method' => 'cash',
+            'bank_account_id' => null,
         ];
     }
 
@@ -494,61 +501,183 @@ class ClientManagement extends Component
     // Add transaction method
     public function addTransaction()
     {
-        $this->validate([
+        $rules = [
             'newTransaction.date' => 'required|date',
             'newTransaction.type' => 'required|in:sale,payment,return,adjustment',
             'newTransaction.description' => 'required|string|max:255',
             'newTransaction.amount' => 'required|numeric|min:0',
             'newTransaction.reference' => 'nullable|string|max:100',
-        ]);
+            'newTransaction.payment_method' => 'required|in:cash,bank',
+        ];
+
+        // Add bank account validation only if payment method is bank
+        if ($this->newTransaction['payment_method'] === 'bank') {
+            $rules['newTransaction.bank_account_id'] = 'required|exists:company_bank_accounts,id';
+        }
+
+        $this->validate($rules);
 
         if ($this->selectedClient && $this->selectedClient->ledger) {
-            $ledger = $this->selectedClient->ledger;
+            try {
+                DB::transaction(function () {
+                    $ledger = $this->selectedClient->ledger;
 
-            // Determine debit/credit based on transaction type
-            $debitAmount = 0;
-            $creditAmount = 0;
+                    // Determine debit/credit based on transaction type
+                    $debitAmount = 0;
+                    $creditAmount = 0;
 
-            switch ($this->newTransaction['type']) {
-                case 'sale':
-                    $debitAmount = $this->newTransaction['amount']; // Increase client balance (what they owe)
-                    break;
-                case 'payment':
-                    $creditAmount = $this->newTransaction['amount']; // Decrease client balance (payment received)
-                    break;
-                case 'return':
-                    $creditAmount = $this->newTransaction['amount']; // Decrease client balance
-                    break;
-                case 'adjustment':
-                    $debitAmount = $this->newTransaction['amount']; // Adjust balance
-                    break;
+                    switch ($this->newTransaction['type']) {
+                        case 'sale':
+                            $debitAmount = $this->newTransaction['amount']; // Increase client balance (what they owe)
+                            break;
+                        case 'payment':
+                            $creditAmount = $this->newTransaction['amount']; // Decrease client balance (payment received)
+
+                            // Allocate payment to unpaid invoices (oldest first)
+                            $allocationResult = Invoice::allocatePaymentToInvoices(
+                                $this->selectedClient->id,
+                                $this->newTransaction['amount'],
+                                $this->newTransaction['date'],
+                                $this->newTransaction['reference']
+                            );
+
+                            // Store allocation details for display
+                            $allocationSummary = collect($allocationResult['allocations'])
+                                ->map(fn($a) => "{$a['invoice_number']}: ₹" . number_format($a['amount_allocated'], 2))
+                                ->join(', ');
+
+                            // Update description with allocation details
+                            if (!empty($allocationSummary)) {
+                                $this->newTransaction['description'] .= " | Allocated to: " . $allocationSummary;
+                            }
+
+                            // Handle remaining amount (advance payment/credit)
+                            if ($allocationResult['remaining_amount'] > 0) {
+                                $this->newTransaction['description'] .= " | Advance: ₹" . number_format($allocationResult['remaining_amount'], 2);
+                            }
+
+                            break;
+                        case 'return':
+                            $creditAmount = $this->newTransaction['amount']; // Decrease client balance
+                            break;
+                        case 'adjustment':
+                            if ($this->newTransaction['amount'] >= 0) {
+                                $debitAmount = $this->newTransaction['amount'];
+                            } else {
+                                $creditAmount = abs($this->newTransaction['amount']);
+                            }
+                            break;
+                    }
+
+                    // Create ledger transaction
+                    $ledgerTransaction = $ledger->transactions()->create([
+                        'date' => $this->newTransaction['date'],
+                        'type' => $this->newTransaction['type'],
+                        'description' => $this->newTransaction['description'],
+                        'debit_amount' => $debitAmount,
+                        'credit_amount' => $creditAmount,
+                        'reference' => $this->newTransaction['reference'],
+                        'referenceable_type' => null,
+                        'referenceable_id' => null,
+                    ]);
+
+                    // Update ledger current balance
+                    $ledger->current_balance += ($debitAmount - $creditAmount);
+                    $ledger->save();
+
+                    // Record bank transaction if payment method is bank
+                    if ($this->newTransaction['payment_method'] === 'bank' && $this->newTransaction['bank_account_id']) {
+                        $bankAccount = CompanyBankAccount::find($this->newTransaction['bank_account_id']);
+
+                        if ($bankAccount) {
+                            // For payment: money comes in (credit to bank)
+                            // For sale/return/adjustment: depends on the transaction type
+                            $bankTransactionType = ($this->newTransaction['type'] === 'payment') ? 'credit' : 'debit';
+                            $bankAmount = $this->newTransaction['amount'];
+
+                            $bankAccount->recordTransaction(
+                                $bankTransactionType,
+                                $bankAmount,
+                                "{$this->newTransaction['type']} transaction for client: {$this->selectedClient->name}",
+                                [
+                                    'transaction_date' => $this->newTransaction['date'],
+                                    'category' => $this->newTransaction['type'],
+                                    'reference_number' => $this->newTransaction['reference'],
+                                    'transactionable_type' => LedgerTransaction::class,
+                                    'transactionable_id' => $ledgerTransaction->id,
+                                ]
+                            );
+                        }
+                    }
+                });
+
+                // Reset form
+                $this->reset('newTransaction');
+                $this->newTransaction = [
+                    'date' => now()->format('Y-m-d'),
+                    'type' => 'sale',
+                    'description' => '',
+                    'amount' => 0,
+                    'reference' => '',
+                    'payment_method' => 'cash',
+                    'bank_account_id' => null,
+                ];
+
+                // Refresh data
+                $this->selectedClient = Client::with(['ledger.transactions'])->find($this->selectedClient->id);
+                $this->success('Transaction added and payments allocated successfully!');
+            } catch (\Exception $e) {
+                Log::error('Error adding client transaction: ' . $e->getMessage());
+                $this->error('Error adding transaction: ' . $e->getMessage());
             }
-
-            // Create transaction
-            $ledger->transactions()->create([
-                'date' => $this->newTransaction['date'],
-                'type' => $this->newTransaction['type'],
-                'description' => $this->newTransaction['description'],
-                'debit_amount' => $debitAmount,
-                'credit_amount' => $creditAmount,
-                'reference' => $this->newTransaction['reference'],
-            ]);
-
-            // Reset form
-            $this->reset('newTransaction');
-            $this->newTransaction = [
-                'date' => now()->format('Y-m-d'),
-                'type' => 'sale',
-                'description' => '',
-                'amount' => 0,
-                'reference' => ''
-            ];
-
-            // Refresh data
-            $this->selectedClient = Client::with(['ledger.transactions'])->find($this->selectedClient->id);
-            $this->success('Transaction added successfully!');
         }
     }
+
+
+
+    public function getPaymentAllocationPreview()
+    {
+        if (!$this->selectedClient || $this->newTransaction['type'] !== 'payment') {
+            return [];
+        }
+
+        $amount = (float)($this->newTransaction['amount'] ?? 0);
+        if ($amount <= 0) {
+            return [];
+        }
+
+        $invoices = Invoice::where('client_id', $this->selectedClient->id)
+            ->whereIn('payment_status', ['unpaid', 'partial'])
+            ->where('balance_amount', '>', 0)
+            ->orderBy('invoice_date', 'asc')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        $remainingAmount = $amount;
+        $preview = [];
+
+        foreach ($invoices as $invoice) {
+            if ($remainingAmount <= 0) break;
+
+            $allocateAmount = min($remainingAmount, $invoice->balance_amount);
+            $preview[] = [
+                'invoice_number' => $invoice->invoice_number,
+                'invoice_date' => $invoice->invoice_date->format('d M Y'),
+                'balance_before' => $invoice->balance_amount,
+                'will_allocate' => $allocateAmount,
+                'balance_after' => $invoice->balance_amount - $allocateAmount,
+            ];
+
+            $remainingAmount -= $allocateAmount;
+        }
+
+        return [
+            'allocations' => $preview,
+            'total_allocated' => $amount - $remainingAmount,
+            'remaining' => $remainingAmount,
+        ];
+    }
+
 
 
     public function render()
@@ -611,6 +740,7 @@ class ClientManagement extends Component
             'row_decoration' => $row_decoration,
             'selectedClient' => $this->selectedClient,
             'activeTab' => $this->activeTab,
+            'bankAccounts' => CompanyBankAccount::active()->get(),
         ]);
     }
 }

@@ -11,14 +11,37 @@ class Invoice extends Model
     use HasFactory, SoftDeletes;
 
     protected $fillable = [
-        'invoice_number', 'invoice_type', 'invoice_date', 'due_date',
-        'client_id', 'client_name', 'client_phone', 'client_address',
-        'is_gst_invoice', 'client_gstin', 'place_of_supply', 'gst_type',
-        'subtotal', 'discount_amount', 'discount_percentage',
-        'cgst_amount', 'sgst_amount', 'igst_amount', 'total_tax', 'total_amount',
-        'paid_amount', 'balance_amount', 'payment_status',
-        'is_monthly_billed', 'monthly_bill_id', 'is_cancelled', 'cancelled_at',
-        'cancellation_reason', 'notes', 'terms_conditions', 'created_by'
+        'invoice_number',
+        'invoice_type',
+        'invoice_date',
+        'due_date',
+        'client_id',
+        'client_name',
+        'client_phone',
+        'client_address',
+        'is_gst_invoice',
+        'client_gstin',
+        'place_of_supply',
+        'gst_type',
+        'subtotal',
+        'discount_amount',
+        'discount_percentage',
+        'cgst_amount',
+        'sgst_amount',
+        'igst_amount',
+        'total_tax',
+        'total_amount',
+        'paid_amount',
+        'balance_amount',
+        'payment_status',
+        'is_monthly_billed',
+        'monthly_bill_id',
+        'is_cancelled',
+        'cancelled_at',
+        'cancellation_reason',
+        'notes',
+        'terms_conditions',
+        'created_by'
     ];
 
     protected $casts = [
@@ -62,9 +85,11 @@ class Invoice extends Model
         return $this->client ? $this->client->name : $this->client_name;
     }
 
+
+
     public function getStatusBadgeClassAttribute()
     {
-        return match($this->payment_status) {
+        return match ($this->payment_status) {
             'paid' => 'badge-success',
             'partial' => 'badge-warning',
             'overdue' => 'badge-error',
@@ -86,13 +111,13 @@ class Invoice extends Model
     public function scopeUnbilled($query)
     {
         return $query->where('is_monthly_billed', false)
-                    ->where('invoice_type', 'client');
+            ->where('invoice_type', 'client');
     }
 
     public function scopeOverdue($query)
     {
         return $query->where('due_date', '<', now())
-                    ->where('payment_status', '!=', 'paid');
+            ->where('payment_status', '!=', 'paid');
     }
 
     // Boot method for automatic invoice number generation
@@ -109,7 +134,7 @@ class Invoice extends Model
         static::deleting(function ($invoice) {
             // Restore stock when invoice is deleted
             $invoice->restoreStock();
-            
+
             // Create ledger adjustment entries
             $invoice->createCancellationLedgerEntries();
         });
@@ -120,10 +145,10 @@ class Invoice extends Model
         $prefix = $type === 'cash' ? 'CASH' : 'INV';
         $year = date('Y');
         $month = date('m');
-        
+
         $lastInvoice = static::where('invoice_number', 'like', "$prefix-$year$month-%")
-                           ->orderBy('invoice_number', 'desc')
-                           ->first();
+            ->orderBy('invoice_number', 'desc')
+            ->first();
 
         if ($lastInvoice) {
             $lastNumber = intval(substr($lastInvoice->invoice_number, -4));
@@ -170,6 +195,76 @@ class Invoice extends Model
         }
     }
 
+    /**
+     * Allocate payment amount to client's unpaid invoices (oldest first)
+     * Returns array of allocated payments
+     */
+    public static function allocatePaymentToInvoices($clientId, $paymentAmount, $paymentDate, $paymentReference = null)
+    {
+        $remainingAmount = $paymentAmount;
+        $allocations = [];
+
+        // Get unpaid/partially paid invoices ordered by date (oldest first)
+        $invoices = static::where('client_id', $clientId)
+            ->whereIn('payment_status', ['unpaid', 'partial'])
+            ->where('balance_amount', '>', 0)
+            ->orderBy('invoice_date', 'asc')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        foreach ($invoices as $invoice) {
+            if ($remainingAmount <= 0) {
+                break;
+            }
+
+            // Calculate how much to allocate to this invoice
+            $amountToAllocate = min($remainingAmount, $invoice->balance_amount);
+
+            // Create payment record
+            $payment = InvoicePayment::create([
+                'invoice_id' => $invoice->id,
+                'payment_date' => $paymentDate,
+                'amount' => $amountToAllocate,
+                'payment_method' => 'cheque',
+                'reference_number' => $paymentReference,
+                'notes' => 'Auto-allocated from ledger payment',
+            ]);
+
+            // Update invoice amounts
+            $invoice->paid_amount += $amountToAllocate;
+            $invoice->balance_amount -= $amountToAllocate;
+
+            // Update payment status
+            if ($invoice->balance_amount <= 0.01) { // Using 0.01 to handle floating point precision
+                $invoice->payment_status = 'paid';
+                $invoice->balance_amount = 0; // Ensure it's exactly 0
+            } elseif ($invoice->paid_amount > 0) {
+                $invoice->payment_status = 'partial';
+            }
+
+            $invoice->save();
+
+            // Track allocation
+            $allocations[] = [
+                'invoice_id' => $invoice->id,
+                'invoice_number' => $invoice->invoice_number,
+                'amount_allocated' => $amountToAllocate,
+                'invoice_balance_before' => $invoice->balance_amount + $amountToAllocate,
+                'invoice_balance_after' => $invoice->balance_amount,
+            ];
+
+            // Reduce remaining amount
+            $remainingAmount -= $amountToAllocate;
+        }
+
+        return [
+            'allocations' => $allocations,
+            'amount_allocated' => $paymentAmount - $remainingAmount,
+            'remaining_amount' => $remainingAmount,
+        ];
+    }
+
+
     public function calculateTotals()
     {
         $this->subtotal = $this->items->sum('taxable_amount');
@@ -179,7 +274,7 @@ class Invoice extends Model
         $this->total_tax = $this->cgst_amount + $this->sgst_amount + $this->igst_amount;
         $this->total_amount = $this->subtotal + $this->total_tax - $this->discount_amount;
         $this->balance_amount = $this->total_amount - $this->paid_amount;
-        
+
         $this->save();
     }
 }

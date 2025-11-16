@@ -6,6 +6,7 @@ use Livewire\Component;
 use Livewire\WithFileUploads;
 use Mary\Traits\Toast;
 use App\Models\CompanyProfile as CompanyProfileModel;
+use App\Models\CompanyBankAccount;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
@@ -79,6 +80,23 @@ class CompanyProfile extends Component
     public $currentLetterheadPath = '';
     public $currentSignaturePath = '';
 
+    // Bank Account properties
+    public $bankAccounts = [];
+    public $showBankAccountModal = false;
+    public $editingBankAccount = null;
+    public $bankAccountForm = [
+        'account_name' => '',
+        'bank_name' => '',
+        'account_number' => '',
+        'ifsc_code' => '',
+        'branch_name' => '',
+        'account_type' => 'current',
+        'opening_balance' => 0,
+        'is_default' => false,
+        'is_active' => true,
+        'notes' => '',
+    ];
+
     protected function rules()
     {
         return [
@@ -133,6 +151,7 @@ class CompanyProfile extends Component
     {
         $this->companyProfile = CompanyProfileModel::current();
         $this->loadCompanyData();
+        $this->loadBankAccounts();
     }
 
     public function switchTab($tab)
@@ -195,6 +214,117 @@ class CompanyProfile extends Component
             $this->currentFaviconPath = $this->companyProfile->favicon_path ?? '';
             $this->currentLetterheadPath = $this->companyProfile->letterhead_path ?? '';
             $this->currentSignaturePath = $this->companyProfile->signature_path ?? '';
+        }
+    }
+
+    public function loadBankAccounts()
+    {
+        $company = CompanyProfileModel::current();
+        if ($company->exists) {
+            $this->bankAccounts = $company->bankAccounts;
+        }
+    }
+
+    public function openBankAccountModal()
+    {
+        $this->showBankAccountModal = true;
+        $this->resetBankAccountForm();
+    }
+
+    public function closeBankAccountModal()
+    {
+        $this->showBankAccountModal = false;
+        $this->editingBankAccount = null;
+        $this->resetValidation();
+    }
+
+    public function resetBankAccountForm()
+    {
+        $this->bankAccountForm = [
+            'account_name' => '',
+            'bank_name' => '',
+            'account_number' => '',
+            'ifsc_code' => '',
+            'branch_name' => '',
+            'account_type' => 'current',
+            'opening_balance' => 0,
+            'is_default' => false,
+            'is_active' => true,
+            'notes' => '',
+        ];
+    }
+
+    public function saveBankAccount()
+    {
+        $this->validate([
+            'bankAccountForm.account_name' => 'required|string|max:255',
+            'bankAccountForm.bank_name' => 'required|string|max:255',
+            'bankAccountForm.account_number' => 'required|string|max:50',
+            'bankAccountForm.ifsc_code' => 'required|string|size:11',
+            'bankAccountForm.account_type' => 'required|in:savings,current,overdraft,cash_credit',
+            'bankAccountForm.opening_balance' => 'nullable|numeric',
+        ]);
+
+        try {
+            $company = CompanyProfileModel::current();
+
+            if ($this->editingBankAccount) {
+                $account = CompanyBankAccount::find($this->editingBankAccount);
+                $account->update($this->bankAccountForm);
+                $message = 'Bank account updated successfully!';
+            } else {
+                $data = $this->bankAccountForm;
+                $data['company_profile_id'] = $company->id;
+                $data['current_balance'] = $data['opening_balance'];
+
+                CompanyBankAccount::create($data);
+                $message = 'Bank account added successfully!';
+            }
+
+            $this->success($message);
+            $this->closeBankAccountModal();
+            $this->loadBankAccounts();
+        } catch (\Exception $e) {
+            Log::error('Error saving bank account: ' . $e->getMessage());
+            $this->error('Error saving bank account');
+        }
+    }
+
+    public function editBankAccount($id)
+    {
+        $account = CompanyBankAccount::find($id);
+        $this->editingBankAccount = $id;
+        $this->bankAccountForm = [
+            'account_name' => $account->account_name,
+            'bank_name' => $account->bank_name,
+            'account_number' => $account->account_number,
+            'ifsc_code' => $account->ifsc_code,
+            'branch_name' => $account->branch_name,
+            'account_type' => $account->account_type,
+            'opening_balance' => $account->opening_balance,
+            'is_default' => $account->is_default,
+            'is_active' => $account->is_active,
+            'notes' => $account->notes,
+        ];
+        $this->showBankAccountModal = true;
+    }
+
+    public function deleteBankAccount($id)
+    {
+        try {
+            $account = CompanyBankAccount::find($id);
+
+            if ($account->transactions()->count() > 0) {
+                $this->error('Cannot delete account with transactions');
+                return;
+            }
+
+            $account->delete();
+            $this->success('Bank account deleted successfully!');
+            $this->loadBankAccounts();
+        } catch (\Exception $e) {
+            Log::error('Error deleting bank account: ' . $e->getMessage());
+            $this->error('Error deleting bank account');
         }
     }
 

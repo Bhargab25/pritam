@@ -498,43 +498,76 @@
 
                     <x-mary-select
                         label="Transaction Type"
-                        wire:model="newTransaction.type"
+                        wire:model.live="newTransaction.type"
                         :options="[
-                            ['id' => 'purchase', 'name' => 'Purchase'],
-                            ['id' => 'payment', 'name' => 'Payment'],
-                            ['id' => 'return', 'name' => 'Return'],
-                            ['id' => 'adjustment', 'name' => 'Adjustment'],
-                        ]"
+                ['id' => 'purchase', 'name' => 'Purchase'],
+                ['id' => 'payment', 'name' => 'Payment'],
+                ['id' => 'return', 'name' => 'Return'],
+                ['id' => 'adjustment', 'name' => 'Adjustment'],
+            ]"
                         option-value="id"
                         option-label="name"
                         required />
-
-                    <div class="md:col-span-2">
-                        <x-mary-input
-                            label="Description"
-                            wire:model="newTransaction.description"
-                            placeholder="Transaction description"
-                            required />
-                    </div>
 
                     <x-mary-input
                         label="Amount"
                         type="number"
                         step="0.01"
                         min="0"
-                        wire:model="newTransaction.amount"
+                        wire:model.number="newTransaction.amount"
+                        prefix="₹"
                         required />
 
                     <x-mary-input
                         label="Reference"
                         wire:model="newTransaction.reference"
                         placeholder="Invoice number, etc." />
+
+                    {{-- Payment Method Selection --}}
+                    <x-mary-select
+                        label="Payment Method"
+                        wire:model.live="newTransaction.payment_method"
+                        :options="[
+                            ['id' => 'cash', 'name' => 'Cash'],
+                            ['id' => 'bank', 'name' => 'Bank Transfer'],
+                        ]"
+                        option-value="id"
+                        option-label="name"
+                        icon="o-credit-card"
+                        required />
+
+                    {{-- Bank Account Selection (shown only if payment method is bank) --}}
+                    @if($newTransaction['payment_method'] === 'bank')
+                    <x-mary-select
+                        label="Bank Account *"
+                        wire:model="newTransaction.bank_account_id"
+                        :options="$bankAccounts"
+                        option-value="id"
+                        option-label="display_name"
+                        icon="o-building-library"
+                        placeholder="Select bank account"
+                        hint="Select the bank account for this transaction"
+                        :error="$errors->first('newTransaction.bank_account_id')"
+                        required />
+                    @else
+                    <div></div> {{-- Spacer to maintain grid layout --}}
+                    @endif
+
+                    <div class="md:col-span-2">
+                        <x-mary-textarea
+                            label="Description"
+                            wire:model="newTransaction.description"
+                            placeholder="Transaction description"
+                            rows="2"
+                            required />
+                    </div>
                 </div>
 
                 <div class="flex justify-end">
                     <x-mary-button
                         label="Add Transaction"
                         class="btn-primary"
+                        icon="o-plus"
                         wire:click="addTransaction"
                         spinner="addTransaction" />
                 </div>

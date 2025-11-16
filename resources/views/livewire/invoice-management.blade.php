@@ -299,13 +299,13 @@
                     class="btn-circle btn-ghost btn-xs text-secondary"
                     tooltip="Duplicate Invoice"
                     @click="$wire.duplicateInvoice({{ $invoice->id }})" />
-                
+
                 <x-mary-button
                     icon="o-trash"
                     class="btn-circle btn-ghost btn-xs text-error"
                     tooltip="Delete Invoice"
                     @click="$wire.deleteInvoice({{ $invoice->id }})" />
-                    
+
                 @endif
             </div>
             @endscope
@@ -424,7 +424,7 @@
                     <div class="col-span-1">
                         <x-mary-input
                             label="Qty *"
-                            wire:model="invoiceItems.{{ $index }}.quantity"
+                            wire:model.live.number="invoiceItems.{{ $index }}.quantity"
                             type="number"
                             step="0.01"
                             placeholder="0"
@@ -459,7 +459,7 @@
                     <div class="col-span-2">
                         <x-mary-input
                             label="Unit Price *"
-                            wire:model="invoiceItems.{{ $index }}.unit_price"
+                            wire:model.live.number="invoiceItems.{{ $index }}.unit_price"
                             type="number"
                             step="0.01"
                             placeholder="0.00"
@@ -473,7 +473,7 @@
                     <div class="col-span-1">
                         <x-mary-input
                             label="CGST%"
-                            wire:model="invoiceItems.{{ $index }}.cgst_rate"
+                            wire:model.live.number="invoiceItems.{{ $index }}.cgst_rate"
                             type="number"
                             step="0.01"
                             placeholder="0" />
@@ -481,7 +481,7 @@
                     <div class="col-span-1">
                         <x-mary-input
                             label="SGST%"
-                            wire:model="invoiceItems.{{ $index }}.sgst_rate"
+                            wire:model.live.number="invoiceItems.{{ $index }}.sgst_rate"
                             type="number"
                             step="0.01"
                             placeholder="0" />
@@ -490,7 +490,7 @@
                     <div class="col-span-2">
                         <x-mary-input
                             label="IGST%"
-                            wire:model="invoiceItems.{{ $index }}.igst_rate"
+                            wire:model.live.number="invoiceItems.{{ $index }}.igst_rate"
                             type="number"
                             step="0.01"
                             placeholder="0" />
@@ -509,6 +509,29 @@
                             step="0.01"
                             placeholder="0" />
                     </div>
+                    {{-- Line Total Display --}}
+                    <div class="col-span-2">
+                        @php
+                        $qty = (float)($item['quantity'] ?? 0);
+                        $price = (float)($item['unit_price'] ?? 0);
+                        $discount = (float)($item['discount_percentage'] ?? 0);
+                        $cgst = (float)($item['cgst_rate'] ?? 0);
+                        $sgst = (float)($item['sgst_rate'] ?? 0);
+                        $igst = (float)($item['igst_rate'] ?? 0);
+
+                        $lineTotal = $qty * $price;
+                        $discountAmount = ($lineTotal * $discount) / 100;
+                        $taxableAmount = $lineTotal - $discountAmount;
+                        $taxAmount = ($taxableAmount * ($cgst + $sgst + $igst)) / 100;
+                        $totalAmount = $taxableAmount + $taxAmount;
+                        @endphp
+                        <x-mary-input
+                            label="Line Total"
+                            value="{{ number_format($totalAmount, 2) }}"
+                            readonly
+                            prefix="₹"
+                            class="font-semibold bg-base-200" />
+                    </div>
 
                     {{-- Remove Button --}}
                     <div class="col-span-1">
@@ -521,6 +544,50 @@
                     </div>
                 </div>
                 @endforeach
+            </div>
+            {{-- Invoice Summary --}}
+            <div class="bg-base-200 p-6 rounded-lg">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="md:col-span-2">
+                        <!-- Spacer -->
+                    </div>
+                    <div class="space-y-2">
+                        <div class="flex justify-between text-sm">
+                            <span>Subtotal:</span>
+                            <span class="font-semibold">₹{{ number_format($this->invoiceSubtotal, 2) }}</span>
+                        </div>
+
+                        @if($isGstInvoice)
+                        @if($gstType === 'cgst_sgst')
+                        <div class="flex justify-between text-sm">
+                            <span>CGST:</span>
+                            <span>₹{{ number_format($this->invoiceCgst, 2) }}</span>
+                        </div>
+                        <div class="flex justify-between text-sm">
+                            <span>SGST:</span>
+                            <span>₹{{ number_format($this->invoiceSgst, 2) }}</span>
+                        </div>
+                        @else
+                        <div class="flex justify-between text-sm">
+                            <span>IGST:</span>
+                            <span>₹{{ number_format($this->invoiceIgst, 2) }}</span>
+                        </div>
+                        @endif
+
+                        <div class="flex justify-between text-sm">
+                            <span>Total Tax:</span>
+                            <span class="font-semibold">₹{{ number_format($this->invoiceTotalTax, 2) }}</span>
+                        </div>
+                        @endif
+
+                        <div class="border-t pt-2 mt-2">
+                            <div class="flex justify-between text-lg font-bold">
+                                <span>Grand Total:</span>
+                                <span class="text-primary">₹{{ number_format($this->invoiceGrandTotal, 2) }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             {{-- Notes --}}

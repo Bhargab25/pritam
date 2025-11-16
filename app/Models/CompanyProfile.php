@@ -57,6 +57,22 @@ class CompanyProfile extends Model
     ];
 
     // Accessors for file URLs
+
+    public function bankAccounts()
+    {
+        return $this->hasMany(CompanyBankAccount::class);
+    }
+
+    public function activeBankAccounts()
+    {
+        return $this->hasMany(CompanyBankAccount::class)->where('is_active', true);
+    }
+
+    public function defaultBankAccount()
+    {
+        return $this->hasOne(CompanyBankAccount::class)->where('is_default', true);
+    }
+    
     public function getLogoUrlAttribute()
     {
         return $this->logo_path ? Storage::url($this->logo_path) : null;

@@ -19,6 +19,7 @@ use App\Models\MonthlyBill;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Http\Request;
 use App\Livewire\UserProfile;
+use App\Livewire\CashFlow;
 
 Route::view('/', 'welcome');
 
@@ -77,6 +78,10 @@ Route::get('/invoices', InvoiceManagement::class)
 Route::get('/sales-reports', SalesReports::class)
     ->middleware(['auth', 'verified'])
     ->name('sales-reports.index');
+
+Route::get('/cash-flow', CashFlow::class)
+    ->middleware(['auth', 'verified'])
+    ->name('cash-flow.index');
 
 Route::get('/sales-analytics', SalesAnalytics::class)
     ->middleware(['auth', 'verified'])

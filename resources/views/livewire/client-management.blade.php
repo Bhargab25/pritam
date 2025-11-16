@@ -561,6 +561,33 @@
 
                 <h3 class="text-lg font-semibold mb-4">Add New Transaction</h3>
 
+                {{-- Payment Allocation Preview --}}
+                @if($newTransaction['type'] === 'payment' && $newTransaction['amount'] > 0)
+                @php
+                $preview = $this->getPaymentAllocationPreview();
+                @endphp
+
+                @if(!empty($preview['allocations']))
+                <div class="bg-info/10 p-4 rounded-lg mb-4">
+                    <h4 class="font-semibold mb-2">Payment Allocation Preview:</h4>
+                    <div class="space-y-2 text-sm">
+                        @foreach($preview['allocations'] as $allocation)
+                        <div class="flex justify-between">
+                            <span>{{ $allocation['invoice_number'] }} ({{ $allocation['invoice_date'] }})</span>
+                            <span class="font-semibold">₹{{ number_format($allocation['will_allocate'], 2) }}</span>
+                        </div>
+                        @endforeach
+
+                        @if($preview['remaining'] > 0)
+                        <div class="border-t pt-2 mt-2 text-warning">
+                            <strong>Advance Payment:</strong> ₹{{ number_format($preview['remaining'], 2) }}
+                        </div>
+                        @endif
+                    </div>
+                </div>
+                @endif
+                @endif
+
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <x-mary-input
                         label="Date"
@@ -570,43 +597,76 @@
 
                     <x-mary-select
                         label="Transaction Type"
-                        wire:model="newTransaction.type"
+                        wire:model.live="newTransaction.type"
                         :options="[
-                        ['id' => 'sale', 'name' => 'Sale'],
-                        ['id' => 'payment', 'name' => 'Payment'],
-                        ['id' => 'return', 'name' => 'Return'],
-                        ['id' => 'adjustment', 'name' => 'Adjustment'],
-                    ]"
+                ['id' => 'sale', 'name' => 'Sale'],
+                ['id' => 'payment', 'name' => 'Payment'],
+                ['id' => 'return', 'name' => 'Return'],
+                ['id' => 'adjustment', 'name' => 'Adjustment'],
+            ]"
                         option-value="id"
                         option-label="name"
                         required />
-
-                    <div class="md:col-span-2">
-                        <x-mary-input
-                            label="Description"
-                            wire:model="newTransaction.description"
-                            placeholder="Transaction description"
-                            required />
-                    </div>
 
                     <x-mary-input
                         label="Amount"
                         type="number"
                         step="0.01"
                         min="0"
-                        wire:model="newTransaction.amount"
+                        wire:model.live.number="newTransaction.amount"
+                        prefix="₹"
                         required />
 
                     <x-mary-input
                         label="Reference"
                         wire:model="newTransaction.reference"
                         placeholder="Invoice number, etc." />
+
+                    {{-- Payment Method Selection --}}
+                    <x-mary-select
+                        label="Payment Method"
+                        wire:model.live="newTransaction.payment_method"
+                        :options="[
+                ['id' => 'cash', 'name' => 'Cash'],
+                ['id' => 'bank', 'name' => 'Bank Transfer'],
+            ]"
+                        option-value="id"
+                        option-label="name"
+                        icon="o-credit-card"
+                        required />
+
+                    {{-- Bank Account Selection (shown only if payment method is bank) --}}
+                    @if($newTransaction['payment_method'] === 'bank')
+                    <x-mary-select
+                        label="Bank Account *"
+                        wire:model="newTransaction.bank_account_id"
+                        :options="$bankAccounts"
+                        option-value="id"
+                        option-label="display_name"
+                        icon="o-building-library"
+                        placeholder="Select bank account"
+                        hint="Select the bank account for this transaction"
+                        :error="$errors->first('newTransaction.bank_account_id')"
+                        required />
+                    @else
+                    <div></div> {{-- Spacer to maintain grid layout --}}
+                    @endif
+
+                    <div class="md:col-span-2">
+                        <x-mary-textarea
+                            label="Description"
+                            wire:model="newTransaction.description"
+                            placeholder="Transaction description"
+                            rows="2"
+                            required />
+                    </div>
                 </div>
 
                 <div class="flex justify-end">
                     <x-mary-button
                         label="Add Transaction"
                         class="btn-primary"
+                        icon="o-plus"
                         wire:click="addTransaction"
                         spinner="addTransaction" />
                 </div>

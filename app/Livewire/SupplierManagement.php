@@ -7,6 +7,7 @@ use App\Models\Supplier;
 use Livewire\WithPagination;
 use Mary\Traits\Toast;
 use App\Models\AccountLedger;
+use App\Models\CompanyBankAccount;
 use App\Models\LedgerTransaction;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -78,7 +79,9 @@ class SupplierManagement extends Component
         'type' => 'purchase',
         'description' => '',
         'amount' => 0,
-        'reference' => ''
+        'reference' => '',
+        'payment_method' => 'cash',
+        'bank_account_id' => null,
     ];
 
     public $transactionFilterOptions = [
@@ -133,7 +136,9 @@ class SupplierManagement extends Component
             'type' => 'purchase',
             'description' => '',
             'amount' => 0,
-            'reference' => ''
+            'reference' => '',
+            'payment_method' => 'cash',      // ✅ Add this
+            'bank_account_id' => null,       // ✅ Add this
         ];
     }
 
@@ -408,75 +413,114 @@ class SupplierManagement extends Component
     // Add a new ledger transaction for the selected supplier
     public function addTransaction()
     {
-        $this->validate([
+        $rules = [
             'newTransaction.date' => 'required|date',
             'newTransaction.type' => 'required|in:purchase,payment,return,adjustment',
             'newTransaction.description' => 'required|string|max:255',
             'newTransaction.amount' => 'required|numeric|min:0',
             'newTransaction.reference' => 'nullable|string|max:100',
-        ]);
+            'newTransaction.payment_method' => 'required|in:cash,bank',
+        ];
+
+        // Add bank account validation only if payment method is bank
+        if ($this->newTransaction['payment_method'] === 'bank') {
+            $rules['newTransaction.bank_account_id'] = 'required|exists:company_bank_accounts,id';
+        }
+
+        $this->validate($rules);
 
         if ($this->selectedSupplier && $this->selectedSupplier->ledger) {
-            DB::transaction(function () {
-                $ledger = $this->selectedSupplier->ledger;
+            try {
+                DB::transaction(function () {
+                    $ledger = $this->selectedSupplier->ledger;
 
-                // Determine debit/credit based on transaction type
-                $debitAmount = 0;
-                $creditAmount = 0;
+                    // Determine debit/credit based on transaction type
+                    $debitAmount = 0;
+                    $creditAmount = 0;
 
-                switch ($this->newTransaction['type']) {
-                    case 'purchase':
-                        $debitAmount = $this->newTransaction['amount']; // Increase supplier balance (you owe more)
-                        break;
-                    case 'payment':
-                        $creditAmount = $this->newTransaction['amount']; // Decrease supplier balance (you paid)
-                        break;
-                    case 'return':
-                        $creditAmount = $this->newTransaction['amount']; // Decrease supplier balance (returned goods)
-                        break;
-                    case 'adjustment':
-                        // For adjustments, determine if it's debit or credit based on amount sign
-                        if ($this->newTransaction['amount'] >= 0) {
+                    switch ($this->newTransaction['type']) {
+                        case 'purchase':
                             $debitAmount = $this->newTransaction['amount'];
-                        } else {
-                            $creditAmount = abs($this->newTransaction['amount']);
+                            break;
+                        case 'payment':
+                            $creditAmount = $this->newTransaction['amount'];
+                            break;
+                        case 'return':
+                            $creditAmount = $this->newTransaction['amount'];
+                            break;
+                        case 'adjustment':
+                            if ($this->newTransaction['amount'] >= 0) {
+                                $debitAmount = $this->newTransaction['amount'];
+                            } else {
+                                $creditAmount = abs($this->newTransaction['amount']);
+                            }
+                            break;
+                    }
+
+                    // Create ledger transaction
+                    $ledgerTransaction = $ledger->transactions()->create([
+                        'date' => $this->newTransaction['date'],
+                        'type' => $this->newTransaction['type'],
+                        'description' => $this->newTransaction['description'],
+                        'debit_amount' => $debitAmount,
+                        'credit_amount' => $creditAmount,
+                        'reference' => $this->newTransaction['reference'],
+                        'referenceable_type' => null,
+                        'referenceable_id' => null,
+                    ]);
+
+                    // Update ledger balance
+                    $ledger->current_balance += ($debitAmount - $creditAmount);
+                    $ledger->save();
+
+                    // Record bank transaction if payment method is bank
+                    if ($this->newTransaction['payment_method'] === 'bank' && $this->newTransaction['bank_account_id']) {
+                        $bankAccount = CompanyBankAccount::find($this->newTransaction['bank_account_id']);
+
+                        if ($bankAccount) {
+                            // For payment: money goes out (debit from bank)
+                            // For purchase/return/adjustment: depends on the transaction type
+                            $bankTransactionType = ($this->newTransaction['type'] === 'payment') ? 'debit' : 'credit';
+                            $bankAmount = $this->newTransaction['amount'];
+
+                            $bankAccount->recordTransaction(
+                                $bankTransactionType,
+                                $bankAmount,
+                                "{$this->newTransaction['type']} transaction for supplier: {$this->selectedSupplier->name}",
+                                [
+                                    'transaction_date' => $this->newTransaction['date'],
+                                    'category' => $this->newTransaction['type'],
+                                    'reference_number' => $this->newTransaction['reference'],
+                                    'transactionable_type' => LedgerTransaction::class,
+                                    'transactionable_id' => $ledgerTransaction->id,
+                                ]
+                            );
                         }
-                        break;
-                }
+                    }
+                });
 
-                // Create transaction
-                $ledger->transactions()->create([
-                    'date' => $this->newTransaction['date'],
-                    'type' => $this->newTransaction['type'],
-                    'description' => $this->newTransaction['description'],
-                    'debit_amount' => $debitAmount,
-                    'credit_amount' => $creditAmount,
-                    'reference' => $this->newTransaction['reference'],
-                    'referenceable_type' => null, // Manual entry, no source document
-                    'referenceable_id' => null,
-                ]);
+                // Reset form
+                $this->reset('newTransaction');
+                $this->newTransaction = [
+                    'date' => now()->format('Y-m-d'),
+                    'type' => 'purchase',
+                    'description' => '',
+                    'amount' => 0,
+                    'reference' => '',
+                    'payment_method' => 'cash',
+                    'bank_account_id' => null,
+                ];
 
-                // Update ledger current balance
-                // For supplier ledger: Debit increases balance (you owe), Credit decreases balance (you paid)
-                $ledger->current_balance += ($debitAmount - $creditAmount);
-                $ledger->save();
-            });
-
-            // Reset form
-            $this->reset('newTransaction');
-            $this->newTransaction = [
-                'date' => now()->format('Y-m-d'),
-                'type' => 'purchase',
-                'description' => '',
-                'amount' => 0,
-                'reference' => ''
-            ];
-
-            // Refresh data
-            $this->selectedSupplier = Supplier::with(['ledger.transactions'])->find($this->selectedSupplier->id);
-            $this->success('Transaction added successfully!');
+                // Refresh data
+                $this->selectedSupplier = Supplier::with(['ledger.transactions'])->find($this->selectedSupplier->id);
+                $this->success('Transaction added successfully!');
+            } catch (\Exception $e) {
+                Log::error('Error adding supplier transaction: ' . $e->getMessage());
+                $this->error('Error adding transaction: ' . $e->getMessage());
+            }
         }
     }
+
 
 
     public function calculateStatistics()
@@ -626,6 +670,7 @@ class SupplierManagement extends Component
             'startIndex' => $startIndex,
             'selectedSupplier' => $this->selectedSupplier, // Explicitly pass this
             'activeTab' => $this->activeTab,
+            'bankAccounts' => CompanyBankAccount::active()->get(),
         ]);
     }
 }

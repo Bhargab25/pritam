@@ -17,6 +17,7 @@ use App\Services\InvoicePdfService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Models\InvoicePayment;
+use Livewire\Attributes\Computed;
 
 class InvoiceManagement extends Component
 {
@@ -174,8 +175,8 @@ class InvoiceManagement extends Component
     {
         $this->invoiceItems[] = [
             'product_id' => '',
-            'quantity' => '',
-            'unit_price' => '',
+            'quantity' => 0,
+            'unit_price' => 0,
             'invoice_unit' => '',
             'discount_percentage' => 0,
             'cgst_rate' => 0,
@@ -225,6 +226,81 @@ class InvoiceManagement extends Component
                 }
             }
         }
+    }
+
+
+    #[Computed]
+    public function invoiceSubtotal()
+    {
+        return collect($this->invoiceItems)->sum(function ($item) {
+            $qty = (float)($item['quantity'] ?? 0);
+            $price = (float)($item['unit_price'] ?? 0);
+            $discount = (float)($item['discount_percentage'] ?? 0);
+
+            $lineTotal = $qty * $price;
+            $discountAmount = ($lineTotal * $discount) / 100;
+            return $lineTotal - $discountAmount;
+        });
+    }
+
+    #[Computed]
+    public function invoiceCgst()
+    {
+        return collect($this->invoiceItems)->sum(function ($item) {
+            $qty = (float)($item['quantity'] ?? 0);
+            $price = (float)($item['unit_price'] ?? 0);
+            $discount = (float)($item['discount_percentage'] ?? 0);
+            $cgst = (float)($item['cgst_rate'] ?? 0);
+
+            $lineTotal = $qty * $price;
+            $discountAmount = ($lineTotal * $discount) / 100;
+            $taxableAmount = $lineTotal - $discountAmount;
+            return ($taxableAmount * $cgst) / 100;
+        });
+    }
+
+    #[Computed]
+    public function invoiceSgst()
+    {
+        return collect($this->invoiceItems)->sum(function ($item) {
+            $qty = (float)($item['quantity'] ?? 0);
+            $price = (float)($item['unit_price'] ?? 0);
+            $discount = (float)($item['discount_percentage'] ?? 0);
+            $sgst = (float)($item['sgst_rate'] ?? 0);
+
+            $lineTotal = $qty * $price;
+            $discountAmount = ($lineTotal * $discount) / 100;
+            $taxableAmount = $lineTotal - $discountAmount;
+            return ($taxableAmount * $sgst) / 100;
+        });
+    }
+
+    #[Computed]
+    public function invoiceIgst()
+    {
+        return collect($this->invoiceItems)->sum(function ($item) {
+            $qty = (float)($item['quantity'] ?? 0);
+            $price = (float)($item['unit_price'] ?? 0);
+            $discount = (float)($item['discount_percentage'] ?? 0);
+            $igst = (float)($item['igst_rate'] ?? 0);
+
+            $lineTotal = $qty * $price;
+            $discountAmount = ($lineTotal * $discount) / 100;
+            $taxableAmount = $lineTotal - $discountAmount;
+            return ($taxableAmount * $igst) / 100;
+        });
+    }
+
+    #[Computed]
+    public function invoiceTotalTax()
+    {
+        return $this->invoiceCgst + $this->invoiceSgst + $this->invoiceIgst;
+    }
+
+    #[Computed]
+    public function invoiceGrandTotal()
+    {
+        return $this->invoiceSubtotal + $this->invoiceTotalTax;
     }
 
     public function saveInvoice()
