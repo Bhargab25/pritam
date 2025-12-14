@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Models\InvoicePayment;
 use Livewire\Attributes\Computed;
+use App\Models\CompanyBankAccount;
 
 class InvoiceManagement extends Component
 {
@@ -302,6 +303,16 @@ class InvoiceManagement extends Component
     {
         return $this->invoiceSubtotal + $this->invoiceTotalTax;
     }
+
+     public $newTransaction = [
+        'date' => '',
+        'type' => 'purchase',
+        'description' => '',
+        'amount' => 0,
+        'reference' => '',
+        'payment_method' => 'cash',
+        'bank_account_id' => null,
+    ];
 
     public function saveInvoice()
     {
@@ -816,6 +827,7 @@ class InvoiceManagement extends Component
                 'monthlyBills' => collect(), // Empty collection for monthly bills tab
                 'clients' => Client::where('is_active', true)->get(),
                 'products' => Product::where('is_active', true)->get(),
+                'bankAccounts' => CompanyBankAccount::active()->get(),
             ]);
         }
     }

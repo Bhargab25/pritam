@@ -21,7 +21,12 @@ use Illuminate\Http\Request;
 use App\Livewire\UserProfile;
 use App\Livewire\CashFlow;
 
-Route::view('/', 'welcome');
+Route::get('/', function () {
+    if (Auth::check()) {
+        return redirect()->route('dashboard');
+    }
+    return redirect()->route('login');
+});
 
 Route::post('/logout', function (Request $request) {
     // Log the logout activity if user exists

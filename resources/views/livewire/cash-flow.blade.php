@@ -1,5 +1,42 @@
 <div>
-    <x-mary-header title="Cash Flow Management" subtitle="Track your money in and out" separator />
+    <div class="flex justify-between items-center mb-6">
+        <x-mary-header title="Cash Flow Management" subtitle="Track your money in and out" separator />
+        
+        {{-- Action Buttons --}}
+        <div class="flex gap-2">
+            <x-mary-button 
+                icon="o-plus-circle" 
+                class="btn-primary btn-sm"
+                wire:click="openCashTransactionModal">
+                Add Cash Transaction
+            </x-mary-button>
+            
+            <x-mary-button 
+                icon="o-arrow-path" 
+                class="btn-secondary btn-sm"
+                wire:click="openTransferModal">
+                Transfer Funds
+            </x-mary-button>
+        </div>
+    </div>
+
+    {{-- Current Balances Card --}}
+    <x-mary-card class="mb-6">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="text-center p-4 bg-success/10 rounded-lg">
+                <p class="text-sm text-gray-600">Cash in Hand</p>
+                <p class="text-3xl font-bold text-success">₹{{ number_format($cashBalance, 2) }}</p>
+            </div>
+            <div class="text-center p-4 bg-info/10 rounded-lg">
+                <p class="text-sm text-gray-600">Total Bank Balance</p>
+                <p class="text-3xl font-bold text-info">₹{{ number_format($bankBalance, 2) }}</p>
+            </div>
+            <div class="text-center p-4 bg-primary/10 rounded-lg">
+                <p class="text-sm text-gray-600">Total Balance</p>
+                <p class="text-3xl font-bold text-primary">₹{{ number_format($cashBalance + $bankBalance, 2) }}</p>
+            </div>
+        </div>
+    </x-mary-card>
 
     {{-- Filters --}}
     <x-mary-card class="mb-6">
@@ -12,16 +49,16 @@
                 <div class="flex flex-wrap gap-2">
                     <x-mary-button label="This Month" size="sm"
                         class="{{ $period === 'this_month' ? 'btn-primary' : 'btn-ghost' }}"
-                        @click="$wire.setPeriod('this_month')" />
+                        wire:click="setPeriod('this_month')" />
                     <x-mary-button label="Last Month" size="sm"
                         class="{{ $period === 'last_month' ? 'btn-primary' : 'btn-ghost' }}"
-                        @click="$wire.setPeriod('last_month')" />
+                        wire:click="setPeriod('last_month')" />
                     <x-mary-button label="This Quarter" size="sm"
                         class="{{ $period === 'this_quarter' ? 'btn-primary' : 'btn-ghost' }}"
-                        @click="$wire.setPeriod('this_quarter')" />
+                        wire:click="setPeriod('this_quarter')" />
                     <x-mary-button label="This Year" size="sm"
                         class="{{ $period === 'this_year' ? 'btn-primary' : 'btn-ghost' }}"
-                        @click="$wire.setPeriod('this_year')" />
+                        wire:click="setPeriod('this_year')" />
                 </div>
             </div>
 
@@ -29,15 +66,17 @@
             <x-mary-input label="From Date" wire:model.live="dateFrom" type="date" />
             <x-mary-input label="To Date" wire:model.live="dateTo" type="date" />
 
-            {{-- Bank Account Filter --}}
-            <x-mary-select
-                label="Bank Account"
-                wire:model="selectedBankAccount"
-                :options="$bankAccounts"
-                option-value="id" 
-                option-label="account_name" 
-                placeholder="Select account" />
-
+            {{-- Account Filter --}}
+            <div>
+                <label class="label">
+                    <span class="label-text">Account</span>
+                </label>
+                <select wire:model.live="selectedAccount" class="select select-bordered w-full">
+                    @foreach($accountOptions as $account)
+                        <option value="{{ $account->id }}">{{ $account->account_name }}</option>
+                    @endforeach
+                </select>
+            </div>
         </div>
     </x-mary-card>
 
@@ -160,12 +199,12 @@
         </x-mary-card>
     </div>
 
-    {{-- Recent Transactions --}}
+    {{-- All Transactions --}}
     <x-mary-card>
         <div class="flex justify-between items-center mb-4">
-            <x-mary-header title="Recent Transactions" subtitle="Last 50 transactions in selected period" />
+            <x-mary-header title="All Transactions" subtitle="Cash and bank transactions in selected period" />
             <x-mary-button label="Export" icon="o-arrow-down-tray" class="btn-sm"
-                @click="$wire.exportCashFlow()" />
+                wire:click="exportCashFlow" />
         </div>
 
         <div class="overflow-x-auto">
@@ -173,40 +212,47 @@
                 <thead>
                     <tr>
                         <th>Date</th>
-                        <th>Bank Account</th>
+                        <th>Account</th>
                         <th>Category</th>
                         <th>Description</th>
                         <th>Reference</th>
                         <th class="text-right">Inflow</th>
                         <th class="text-right">Outflow</th>
-                        <th class="text-right">Balance</th>
                     </tr>
                 </thead>
                 <tbody>
-                    @forelse($bankTransactions as $transaction)
+                    @forelse($allTransactions->take(50) as $transaction)
                     <tr>
-                        <td class="text-sm">{{ $transaction->transaction_date->format('d M Y') }}</td>
-                        <td class="text-sm">{{ $transaction->bankAccount->account_name }}</td>
-                        <td>
-                            <span class="badge badge-sm">{{ $transaction->category ?: 'N/A' }}</span>
+                        <td class="text-sm">{{ $transaction['date']->format('d M Y') }}</td>
+                        <td class="text-sm">
+                            <div class="flex items-center gap-1">
+                                @if($transaction['account_type'] === 'cash')
+                                    <span class="text-lg">💵</span>
+                                @else
+                                    <span class="text-lg">🏦</span>
+                                @endif
+                                {{ $transaction['account'] }}
+                            </div>
                         </td>
-                        <td class="text-sm max-w-xs truncate">{{ $transaction->description }}</td>
-                        <td class="text-xs text-gray-600">{{ $transaction->reference_number }}</td>
+                        <td>
+                            <span class="badge badge-sm">{{ $transaction['category'] }}</span>
+                        </td>
+                        <td class="text-sm max-w-xs truncate">{{ $transaction['description'] }}</td>
+                        <td class="text-xs text-gray-600">{{ $transaction['reference'] ?: '-' }}</td>
                         <td class="text-right text-success font-medium">
-                            @if($transaction->type === 'credit')
-                            ₹{{ number_format($transaction->amount, 2) }}
+                            @if($transaction['type'] === 'credit')
+                            ₹{{ number_format($transaction['amount'], 2) }}
                             @endif
                         </td>
                         <td class="text-right text-error font-medium">
-                            @if($transaction->type === 'debit')
-                            ₹{{ number_format($transaction->amount, 2) }}
+                            @if($transaction['type'] === 'debit')
+                            ₹{{ number_format($transaction['amount'], 2) }}
                             @endif
                         </td>
-                        <td class="text-right font-semibold">₹{{ number_format($transaction->balance_after, 2) }}</td>
                     </tr>
                     @empty
                     <tr>
-                        <td colspan="8" class="text-center py-8 text-gray-500">
+                        <td colspan="7" class="text-center py-8 text-gray-500">
                             No transactions found for the selected period
                         </td>
                     </tr>
@@ -215,4 +261,106 @@
             </table>
         </div>
     </x-mary-card>
+
+    {{-- Add Cash Transaction Modal --}}
+    <x-mary-modal wire:model="showCashTransactionModal" title="Add Cash Transaction">
+        <div class="space-y-4">
+            <x-mary-input label="Date *" wire:model="newTransaction.date" type="date" required />
+
+            <div>
+                <label class="label">
+                    <span class="label-text">Transaction Type *</span>
+                </label>
+                <select wire:model="newTransaction.type" class="select select-bordered w-full" required>
+                    <option value="receipt">💰 Cash Receipt (+)</option>
+                    <option value="payment">💸 Cash Payment (-)</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="label">
+                    <span class="label-text">Category *</span>
+                </label>
+                <select wire:model="newTransaction.category" class="select select-bordered w-full" required>
+                    @foreach($categoryOptions as $category)
+                        <option value="{{ $category['id'] }}">{{ $category['name'] }}</option>
+                    @endforeach
+                </select>
+            </div>
+
+            <x-mary-textarea label="Description *" wire:model="newTransaction.description" 
+                placeholder="Enter transaction details" required />
+
+            <x-mary-input label="Amount *" wire:model="newTransaction.amount" 
+                type="number" step="0.01" prefix="₹" required />
+
+            <x-mary-input label="Reference" wire:model="newTransaction.reference" 
+                placeholder="Receipt/Bill number" />
+        </div>
+
+        <x-slot:actions>
+            <x-mary-button label="Cancel" wire:click="$set('showCashTransactionModal', false)" />
+            <x-mary-button label="Save Transaction" class="btn-primary" 
+                wire:click="addCashTransaction" spinner="addCashTransaction" />
+        </x-slot:actions>
+    </x-mary-modal>
+
+    {{-- Transfer Funds Modal --}}
+    <x-mary-modal wire:model="showTransferModal" title="Transfer Funds">
+        <div class="space-y-4">
+            <x-mary-input label="Date *" wire:model="transfer.date" type="date" required />
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="label">
+                        <span class="label-text">From *</span>
+                    </label>
+                    <select wire:model.live="transfer.from_type" class="select select-bordered w-full" required>
+                        <option value="cash">💵 Cash</option>
+                        <option value="bank">🏦 Bank</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="label">
+                        <span class="label-text">To *</span>
+                    </label>
+                    <select wire:model.live="transfer.to_type" class="select select-bordered w-full" required>
+                        <option value="cash">💵 Cash</option>
+                        <option value="bank">🏦 Bank</option>
+                    </select>
+                </div>
+            </div>
+
+            @if(in_array('bank', [$transfer['from_type'], $transfer['to_type']]))
+            <div>
+                <label class="label">
+                    <span class="label-text">Bank Account *</span>
+                </label>
+                <select wire:model="transfer.bank_account_id" class="select select-bordered w-full" required>
+                    <option value="">Select bank account</option>
+                    @foreach($bankAccounts as $account)
+                        <option value="{{ $account->id }}">
+                            {{ $account->bank_name }} - {{ $account->account_number }}
+                        </option>
+                    @endforeach
+                </select>
+            </div>
+            @endif
+
+            <x-mary-input label="Amount *" wire:model="transfer.amount" 
+                type="number" step="0.01" prefix="₹" required />
+
+            <x-mary-textarea label="Description *" wire:model="transfer.description" required />
+
+            <x-mary-input label="Reference" wire:model="transfer.reference" 
+                placeholder="Transaction reference" />
+        </div>
+
+        <x-slot:actions>
+            <x-mary-button label="Cancel" wire:click="$set('showTransferModal', false)" />
+            <x-mary-button label="Transfer" class="btn-success" 
+                wire:click="transferFunds" spinner="transferFunds" />
+        </x-slot:actions>
+    </x-mary-modal>
 </div>
