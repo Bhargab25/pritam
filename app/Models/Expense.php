@@ -19,6 +19,7 @@ class Expense extends Model
         'description',
         'expense_date',
         'payment_method',
+        'bank_account_id',  // Add this
         'reference_number',
         'is_business_expense',
         'is_reimbursable',
@@ -56,6 +57,12 @@ class Expense extends Model
     public function approver()
     {
         return $this->belongsTo(User::class, 'approved_by');
+    }
+
+    // Add bank account relationship
+    public function bankAccount()
+    {
+        return $this->belongsTo(CompanyBankAccount::class, 'bank_account_id');
     }
 
     // Accessors

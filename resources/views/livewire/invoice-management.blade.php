@@ -375,36 +375,31 @@
                     placeholder="Customer phone" />
             </div>
             {{-- Payment method --}}
-             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <x-mary-select
-                        label="Payment Method"
-                        wire:model.live="newTransaction.payment_method"
-                        :options="[
-                            ['id' => 'cash', 'name' => 'Cash'],
-                            ['id' => 'bank', 'name' => 'Bank Transfer'],
-                        ]"
-                        option-value="id"
-                        option-label="name"
-                        icon="o-credit-card"
-                        required />
-                @if($newTransaction['payment_method'] === 'bank')
-                <x-mary-select
-                    label="Bank Account"
-                    wire:model.live="newTransaction.bank_account_id"
-                    :options="$bankAccounts"
-                    option-value="id"
-                    option-label="account_name"
-                    placeholder="Select bank account"
-                    required />
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <select wire:model.live="invoicePaymentMethod" class="select select-bordered w-full" required>
+                    <option value="cash">💵 Cash</option>
+                    <option value="bank">🏦 Bank Transfer</option>
+                </select>
+
+                {{-- Bank Account --}}
+                @if($invoicePaymentMethod === 'bank')
+                <select wire:model="invoiceBankAccountId" class="select select-bordered w-full" required>
+                    <option value="">Select bank account</option>
+                    @foreach($bankAccounts as $account)
+                    <option value="{{ $account->id }}">
+                        {{ $account->bank_name }} - {{ $account->account_number }}
+                    </option>
+                    @endforeach
+                </select>
                 @endif
             </div>
             @endif
-            {{-- culy expence cant negative value --}}
+            {{-- kuli expence cant negative value --}}
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <x-mary-input
-                    label="Culy Expense"
-                    wire:model.live.number="culyExpense"
+                    label="Coolie Expense"
+                    wire:model.live="coolieExpense"
                     type="number"
                     step="0.01"
                     min="0"

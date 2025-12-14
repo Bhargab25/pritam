@@ -31,6 +31,10 @@ class Invoice extends Model
         'igst_amount',
         'total_tax',
         'total_amount',
+        'coolie_expense',
+        'final_amount',
+        'payment_method',
+        'bank_account_id',
         'paid_amount',
         'balance_amount',
         'payment_status',
@@ -41,7 +45,7 @@ class Invoice extends Model
         'cancellation_reason',
         'notes',
         'terms_conditions',
-        'created_by'
+        'created_by',
     ];
 
     protected $casts = [
@@ -50,7 +54,18 @@ class Invoice extends Model
         'is_gst_invoice' => 'boolean',
         'is_monthly_billed' => 'boolean',
         'is_cancelled' => 'boolean',
-        'cancelled_at' => 'timestamp',
+        'cancelled_at' => 'datetime',
+        'subtotal' => 'decimal:2',
+        'discount_amount' => 'decimal:2',
+        'cgst_amount' => 'decimal:2',
+        'sgst_amount' => 'decimal:2',
+        'igst_amount' => 'decimal:2',
+        'total_tax' => 'decimal:2',
+        'total_amount' => 'decimal:2',
+        'coolie_expense' => 'decimal:2',
+        'final_amount' => 'decimal:2',
+        'paid_amount' => 'decimal:2',
+        'balance_amount' => 'decimal:2'
     ];
 
     // Relationships
@@ -77,6 +92,11 @@ class Invoice extends Model
     public function ledgerTransactions()
     {
         return $this->morphMany(LedgerTransaction::class, 'reference');
+    }
+
+    public function bankAccount()
+    {
+        return $this->belongsTo(CompanyBankAccount::class, 'bank_account_id');
     }
 
     // Accessors & Mutators
@@ -126,17 +146,34 @@ class Invoice extends Model
         parent::boot();
 
         static::creating(function ($invoice) {
-            if (empty($invoice->invoice_number)) {
-                $invoice->invoice_number = static::generateInvoiceNumber($invoice->invoice_type);
-            }
+            $invoice->invoice_number = 'INV-' . date('Y') . '-' . str_pad(
+                Invoice::whereYear('created_at', date('Y'))->count() + 1,
+                5,
+                '0',
+                STR_PAD_LEFT
+            );
         });
 
         static::deleting(function ($invoice) {
-            // Restore stock when invoice is deleted
-            $invoice->restoreStock();
+            if ($invoice->is_cancelled) {
+                // Restore stock when invoice is deleted
+                foreach ($invoice->items as $item) {
+                    $product = $item->product;
+                    if ($product) {
+                        $product->increment('stock_quantity', $item->quantity);
 
-            // Create ledger adjustment entries
-            $invoice->createCancellationLedgerEntries();
+                        // Create stock movement
+                        StockMovement::create([
+                            'product_id' => $product->id,
+                            'type' => 'in',
+                            'quantity' => $item->quantity,
+                            'reason' => 'invoice_cancellation',
+                            'reference_type' => Invoice::class,
+                            'reference_id' => $invoice->id,
+                        ]);
+                    }
+                }
+            }
         });
     }
 
