@@ -5,6 +5,9 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
 
 class Invoice extends Model
 {
@@ -167,22 +170,123 @@ class Invoice extends Model
         });
 
         static::deleting(function ($invoice) {
-            if ($invoice->is_cancelled) {
-                foreach ($invoice->items as $item) {
-                    $product = $item->product;
-                    if ($product) {
-                        $product->increment('stock_quantity', $item->quantity);
+            try {
+                DB::transaction(function () use ($invoice) {
 
-                        StockMovement::create([
-                            'product_id' => $product->id,
-                            'type' => 'in',
-                            'quantity' => $item->quantity,
-                            'reason' => 'invoice_cancellation',
-                            'reference_type' => Invoice::class,
-                            'reference_id' => $invoice->id,
-                        ]);
+                    // ========================================
+                    // 1. HANDLE STOCK REVERSAL (Your existing logic)
+                    // ========================================
+                    if ($invoice->is_cancelled) {
+                        foreach ($invoice->items as $item) {
+                            $product = $item->product;
+                            if ($product) {
+                                $product->increment('stock_quantity', $item->quantity);
+
+                                StockMovement::create([
+                                    'product_id' => $product->id,
+                                    'type' => 'in',
+                                    'quantity' => $item->quantity,
+                                    'reason' => 'invoice_cancellation',
+                                    'reference_type' => Invoice::class,
+                                    'reference_id' => $invoice->id,
+                                ]);
+                            }
+                        }
                     }
-                }
+
+                    // ========================================
+                    // 2. HANDLE LEDGER TRANSACTION REVERSAL (New logic)
+                    // ========================================
+                    $client = $invoice->client;
+
+                    if ($client && $client->ledger) {
+                        $ledger = $client->ledger;
+
+                        // Find all ledger transactions related to this invoice
+                        $invoiceTransactions = LedgerTransaction::where('referenceable_type', Invoice::class)
+                            ->where('referenceable_id', $invoice->id)
+                            ->get();
+
+                        foreach ($invoiceTransactions as $transaction) {
+                            // Reverse the transaction effect on ledger balance
+                            $ledger->current_balance -= ($transaction->debit_amount - $transaction->credit_amount);
+
+                            // Soft delete the transaction
+                            $transaction->delete();
+                        }
+
+                        $ledger->save();
+
+                        Log::info("Ledger transactions reversed for invoice {$invoice->invoice_number}");
+                    }
+                });
+
+                Log::info("Invoice {$invoice->invoice_number} deleted successfully with stock and ledger reversal.");
+            } catch (\Exception $e) {
+                Log::error("Error deleting invoice {$invoice->invoice_number}: " . $e->getMessage());
+                throw $e; // Re-throw to prevent deletion if something fails
+            }
+        });
+
+        // ✅ WHEN INVOICE IS BEING RESTORED
+        static::restoring(function ($invoice) {
+            try {
+                DB::transaction(function () use ($invoice) {
+
+                    // ========================================
+                    // 1. RESTORE STOCK (Reverse the reversal)
+                    // ========================================
+                    if ($invoice->is_cancelled) {
+                        foreach ($invoice->items as $item) {
+                            $product = $item->product;
+                            if ($product) {
+                                // Deduct stock again
+                                $product->decrement('stock_quantity', $item->quantity);
+
+                                StockMovement::create([
+                                    'product_id' => $product->id,
+                                    'type' => 'out',
+                                    'quantity' => $item->quantity,
+                                    'reason' => 'invoice_restoration',
+                                    'reference_type' => Invoice::class,
+                                    'reference_id' => $invoice->id,
+                                ]);
+                            }
+                        }
+                    }
+
+                    // ========================================
+                    // 2. RESTORE LEDGER TRANSACTIONS
+                    // ========================================
+                    $client = $invoice->client;
+
+                    if ($client && $client->ledger) {
+                        $ledger = $client->ledger;
+
+                        // Restore soft-deleted ledger transactions
+                        $invoiceTransactions = LedgerTransaction::withTrashed()
+                            ->where('referenceable_type', Invoice::class)
+                            ->where('referenceable_id', $invoice->id)
+                            ->get();
+
+                        foreach ($invoiceTransactions as $transaction) {
+                            // Restore the transaction
+                            $transaction->restore();
+
+                            // Re-apply effect on ledger balance
+                            $ledger->current_balance += ($transaction->debit_amount - $transaction->credit_amount);
+                        }
+
+                        $ledger->save();
+
+                        Log::info("Ledger transactions restored for invoice {$invoice->invoice_number}");
+                    }
+                });
+
+                Log::info("Invoice {$invoice->invoice_number} restored successfully.");
+            } catch (\Exception $e) {
+                Log::error("Error restoring invoice {$invoice->invoice_number}: " . $e->getMessage());
+                throw $e;
             }
         });
     }

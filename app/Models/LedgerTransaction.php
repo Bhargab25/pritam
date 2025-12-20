@@ -3,9 +3,11 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class LedgerTransaction extends Model
 {
+    use SoftDeletes;
     protected $fillable = [
         'ledger_id',
         'date',
@@ -32,6 +34,11 @@ class LedgerTransaction extends Model
     public function referenceable()
     {
         return $this->morphTo();
+    }
+
+    public function bankTransaction()
+    {
+        return $this->morphOne(BankTransaction::class, 'transactionable');
     }
 
     // Boot method to update ledger balance on create/update/delete

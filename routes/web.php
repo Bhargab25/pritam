@@ -84,6 +84,15 @@ Route::get('/sales-reports', SalesReports::class)
     ->middleware(['auth', 'verified'])
     ->name('sales-reports.index');
 
+Route::get('/payments', App\Livewire\PaymentManagement::class)
+    ->middleware(['auth'])
+    ->name('payments');
+
+Route::get('/outstanding', App\Livewire\OutstandingManagement::class)
+    ->middleware(['auth'])
+    ->name('outstanding');
+
+
 Route::get('/cash-flow', CashFlow::class)
     ->middleware(['auth', 'verified'])
     ->name('cash-flow.index');
