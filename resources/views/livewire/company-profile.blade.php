@@ -19,11 +19,11 @@
                 {{ $activeTab === 'tax' ? 'bg-primary text-white shadow-lg' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-200' }}">
                 Tax & Legal
             </button>
-            <button wire:click="switchTab('banking')"
+            {{-- <button wire:click="switchTab('banking')"
                 class="px-4 py-2 text-sm font-medium rounded-lg transition-all duration-200 
                 {{ $activeTab === 'banking' ? 'bg-primary text-white shadow-lg' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-200' }}">
                 Banking
-            </button>
+            </button> --}}
             <button wire:click="switchTab('details')"
                 class="px-4 py-2 text-sm font-medium rounded-lg transition-all duration-200 
                 {{ $activeTab === 'details' ? 'bg-primary text-white shadow-lg' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-200' }}">
@@ -430,8 +430,8 @@
                         <x-mary-button icon="o-eye" class="btn-sm btn-ghost"
                             @click="$wire.viewBankTransactions({{ $account->id }})" />
                         @if(!$account->is_default)
-                        <x-mary-button icon="o-trash" class="btn-sm btn-ghost btn-error"
-                            @click="$wire.deleteBankAccount({{ $account->id }})" />
+                        {{-- <x-mary-button icon="o-trash" class="btn-sm btn-ghost btn-error"
+                            @click="$wire.deleteBankAccount({{ $account->id }})" /> --}}
                         @endif
                     </div>
                 </div>

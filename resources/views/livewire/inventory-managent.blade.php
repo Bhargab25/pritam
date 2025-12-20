@@ -386,14 +386,18 @@
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <!-- Fixed Supplier Select -->
-                <x-mary-select
+                <x-mary-choices-offline
                     label="Supplier (Optional)"
                     wire:model="supplierId"
                     :options="$suppliers"
                     option-value="id"
                     option-label="name"
                     placeholder="Select supplier"
-                    icon="o-truck" />
+                    icon="o-truck"
+                    single
+                    clearable
+                    searchable
+                    required />
 
                 <x-mary-textarea
                     label="Remarks (Optional)"

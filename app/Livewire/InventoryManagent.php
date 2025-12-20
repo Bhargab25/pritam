@@ -74,17 +74,19 @@ class InventoryManagent extends Component
     protected $rules = [
         'challanNumber' => 'required|string|unique:challans,challan_number',
         'challanDate' => 'required|date',
-        'supplierId' => 'nullable|exists:suppliers,id',
+        'supplierId' => 'required|exists:suppliers,id',
         'remarks' => 'nullable|string|max:500',
         'stockItems.*.product_id' => 'required|exists:products,id',
         'stockItems.*.quantity' => 'required|numeric|min:0.01',
-        'stockItems.*.price' => 'nullable|numeric|min:0',
+        'stockItems.*.price' => 'required|numeric|min:1',
     ];
 
     protected $messages = [
         'stockItems.*.product_id.required' => 'Please select a product',
         'stockItems.*.quantity.required' => 'Quantity is required',
         'stockItems.*.quantity.min' => 'Quantity must be greater than 0',
+        'stockItems.*.price.required' => 'Price is required',
+        'stockItems.*.price.min' => 'Price cannot be negative',
         'adjustmentType.required' => 'Please select an adjustment type',
         'adjustmentQuantity.required' => 'Adjustment quantity is required',
         'adjustmentQuantity.min' => 'Adjustment quantity must be greater than 0',

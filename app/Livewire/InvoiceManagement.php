@@ -74,6 +74,7 @@ class InvoiceManagement extends Component
     public $dateFrom = '';
     public $dateTo = '';
     public $perPage = 15;
+    public $showAllFinancialYear = false;
 
     // Statistics
     public $totalInvoices = 0;
@@ -120,6 +121,20 @@ class InvoiceManagement extends Component
         'invoiceItems.*.sgst_rate' => 'nullable|numeric|min:0|max:50',
         'invoiceItems.*.igst_rate' => 'nullable|numeric|min:0|max:50',
     ];
+
+    public function updatedShowAllFinancialYear($value)
+    {
+        if ($value) {
+            $today = now();
+
+            $financialYearStart = $today->month < 4
+                ? $today->copy()->subYear()->startOfYear()->addMonths(3)  // 1 Apr last FY
+                : $today->copy()->startOfYear()->addMonths(3);            // 1 Apr this FY
+
+            $this->dateFrom = $financialYearStart->format('Y-m-d');
+            $this->dateTo   = $today->format('Y-m-d');
+        }
+    }
 
     public function mount()
     {
@@ -494,6 +509,7 @@ class InvoiceManagement extends Component
             DB::transaction(function () {
                 // Create invoice
                 $invoice = Invoice::create([
+                    'invoice_number' => Invoice::generateInvoiceNumber($this->invoiceType),
                     'invoice_type' => $this->invoiceType,
                     'invoice_date' => $this->invoiceDate,
                     'due_date' => $this->dueDate,
@@ -626,11 +642,6 @@ class InvoiceManagement extends Component
 
                         $cashLedger->current_balance += $finalAmount;
                         $cashLedger->save();
-
-                        // Record and deduct coolie expense from cash
-                        if ($this->coolieExpense > 0) {
-                            $this->recordCoolieExpense($invoice, $cashLedger);
-                        }
                     } elseif ($this->paymentMethod === 'bank') {
                         // Add invoice amount to bank account
                         $bankAccount = CompanyBankAccount::find($this->bankAccountId);
@@ -647,11 +658,6 @@ class InvoiceManagement extends Component
                                     'transactionable_id' => $invoice->id,
                                 ]
                             );
-                        }
-
-                        // Record coolie expense paid from cash (assuming coolie is paid in cash)
-                        if ($this->coolieExpense > 0) {
-                            $this->recordCoolieExpense($invoice, $cashLedger);
                         }
                     }
 
@@ -695,6 +701,10 @@ class InvoiceManagement extends Component
                         $client->ledger->save();
                     }
                 }
+                // Record and deduct coolie expense from cash
+                if ($this->coolieExpense > 0) {
+                    $this->recordCoolieExpense($invoice, $cashLedger);
+                }
 
                 $this->success('Invoice created successfully!');
                 $this->closeInvoiceModal();
@@ -712,48 +722,56 @@ class InvoiceManagement extends Component
     }
 
     // Helper method to record coolie expense
-    private function recordCoolieExpense($invoice, $cashLedger)
+    private function recordCoolieExpense(Invoice $invoice, AccountLedger $cashLedger): void
     {
-        // Get or create "Coolie Charges" category
+        if ($this->coolieExpense <= 0) {
+            return;
+        }
+
+        // Decide label only
+        $categoryName = $this->invoiceType === 'client'
+            ? 'Delivery Charges'
+            : 'Coolie Charges';
+
+        // One firstOrCreate, no duplicated arrays
         $coolieCategory = ExpenseCategory::firstOrCreate(
-            ['name' => 'Coolie Charges'],
+            ['name' => $categoryName],
             [
                 'description' => 'Delivery and coolie charges',
                 'is_active' => true,
             ]
         );
 
-        // Create expense record
+        // Expense row
         $expense = Expense::create([
-            'expense_title' => "Coolie charges for invoice {$invoice->invoice_number}",
-            'category_id' => $coolieCategory->id,
-            'amount' => $this->coolieExpense,
-            'description' => "Coolie/delivery charges paid for invoice {$invoice->invoice_number}",
-            'expense_date' => $invoice->invoice_date,
-            'payment_method' => 'cash',
-            'bank_account_id' => null,
-            'reference_number' => $invoice->invoice_number,
+            'expense_title'      => "{$categoryName} for invoice {$invoice->invoice_number}",
+            'category_id'        => $coolieCategory->id,
+            'amount'             => $this->coolieExpense,
+            'description'        => "{$categoryName} paid for invoice {$invoice->invoice_number}",
+            'expense_date'       => $invoice->invoice_date,
+            'payment_method'     => 'cash',
+            'bank_account_id'    => null,
+            'reference_number'   => $invoice->invoice_number,
             'is_business_expense' => true,
-            'is_reimbursable' => false,
-            'approval_status' => 'approved',
-            'approved_by' => auth()->user()->name,
-            'approved_at' => now(),
-            'created_by' => auth()->id(),
+            'is_reimbursable'    => false,
+            'approval_status'    => 'approved',
+            'approved_by'        => auth()->user()->name,
+            'approved_at'        => now(),
+            'created_by'         => auth()->id(),
         ]);
 
-        // Deduct coolie expense from cash ledger
+        // Cash out
         $cashLedger->transactions()->create([
-            'date' => $invoice->invoice_date,
-            'type' => 'payment',
-            'description' => "Coolie expense for invoice {$invoice->invoice_number}",
-            'debit_amount' => 0,
-            'credit_amount' => $this->coolieExpense,
-            'reference' => $expense->expense_ref,
+            'date'               => $invoice->invoice_date,
+            'type'               => 'payment',
+            'description'        => "{$categoryName} for invoice {$invoice->invoice_number}",
+            'debit_amount'       => 0,
+            'credit_amount'      => $this->coolieExpense,
+            'reference'          => $expense->expense_ref,
             'referenceable_type' => Expense::class,
-            'referenceable_id' => $expense->id,
+            'referenceable_id'   => $expense->id,
         ]);
 
-        // Update cash ledger balance
         $cashLedger->current_balance -= $this->coolieExpense;
         $cashLedger->save();
     }

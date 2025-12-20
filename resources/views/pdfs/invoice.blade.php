@@ -307,9 +307,25 @@
                 </tr>
                 @endif
                 @endif
+
+                {{-- Coolie / Delivery Expense --}}
+                @if($invoice->coolie_expense > 0)
+                <tr>
+                    <td style="padding: 4px; border-bottom: 1px solid #ddd;">
+                        @if($invoice->invoice_type === 'cash')
+                        Coolie Expense:
+                        @else
+                        Delivery Charge:
+                        @endif
+                    </td>
+                    <td style="padding: 4px; text-align: right; border-bottom: 1px solid #ddd;">₹{{ number_format($invoice->coolie_expense, 2) }}</td>
+                </tr>
+                @endif
+
+                {{-- Final Total (goods + tax + coolie) --}}
                 <tr style="background-color: #f5f5f5;">
-                    <td style="padding: 6px; border: 2px solid #333;"><strong>Total Amount:</strong></td>
-                    <td style="padding: 6px; text-align: right; border: 2px solid #333;"><strong>₹{{ number_format($invoice->total_amount, 2) }}</strong></td>
+                    <td style="padding: 6px; border: 2px solid #333;"><strong>Final Amount:</strong></td>
+                    <td style="padding: 6px; text-align: right; border: 2px solid #333;"><strong>₹{{ number_format($invoice->final_amount ?? $invoice->total_amount + $invoice->coolie_expense, 2) }}</strong></td>
                 </tr>
             </table>
         </div>

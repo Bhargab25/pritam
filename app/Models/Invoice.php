@@ -146,23 +146,33 @@ class Invoice extends Model
         parent::boot();
 
         static::creating(function ($invoice) {
-            $invoice->invoice_number = 'INV-' . date('Y') . '-' . str_pad(
-                Invoice::whereYear('created_at', date('Y'))->count() + 1,
-                5,
-                '0',
-                STR_PAD_LEFT
-            );
+            $year = date('Y');
+            $prefix = 'INV-' . $year . '-';
+
+            // Find last invoice for this year (including soft-deleted)
+            $lastInvoice = static::withTrashed()
+                ->where('invoice_number', 'like', $prefix . '%')
+                ->orderBy('invoice_number', 'desc')
+                ->first();
+
+            if ($lastInvoice) {
+                // Extract numeric part after last dash
+                $lastNumber = (int) substr($lastInvoice->invoice_number, strrpos($lastInvoice->invoice_number, '-') + 1);
+                $newNumber  = $lastNumber + 1;
+            } else {
+                $newNumber = 1;
+            }
+
+            $invoice->invoice_number = $prefix . str_pad($newNumber, 5, '0', STR_PAD_LEFT);
         });
 
         static::deleting(function ($invoice) {
             if ($invoice->is_cancelled) {
-                // Restore stock when invoice is deleted
                 foreach ($invoice->items as $item) {
                     $product = $item->product;
                     if ($product) {
                         $product->increment('stock_quantity', $item->quantity);
 
-                        // Create stock movement
                         StockMovement::create([
                             'product_id' => $product->id,
                             'type' => 'in',
