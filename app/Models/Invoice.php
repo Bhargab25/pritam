@@ -174,7 +174,7 @@ class Invoice extends Model
                 DB::transaction(function () use ($invoice) {
 
                     // ========================================
-                    // 1. HANDLE STOCK REVERSAL (Your existing logic)
+                    // 1. HANDLE STOCK REVERSAL
                     // ========================================
                     if ($invoice->is_cancelled) {
                         foreach ($invoice->items as $item) {
@@ -195,7 +195,7 @@ class Invoice extends Model
                     }
 
                     // ========================================
-                    // 2. HANDLE LEDGER TRANSACTION REVERSAL (New logic)
+                    // 2. HANDLE LEDGER TRANSACTION REVERSAL
                     // ========================================
                     $client = $invoice->client;
 
@@ -219,14 +219,65 @@ class Invoice extends Model
 
                         Log::info("Ledger transactions reversed for invoice {$invoice->invoice_number}");
                     }
+
+                    // ========================================
+                    // 3. DELETE COOLIE/DELIVERY EXPENSE ENTRY (✅ NEW)
+                    // ========================================
+                    if ($invoice->coolie_expense > 0) {
+                        // Find the expense entry created for this invoice
+                        $expense = Expense::where('reference_number', $invoice->invoice_number)
+                            ->whereIn('expense_title', [
+                                "Coolie Charges for invoice {$invoice->invoice_number}",
+                                "Delivery Charges for invoice {$invoice->invoice_number}"
+                            ])
+                            ->first();
+
+                        if ($expense) {
+                            // Find cash ledger
+                            $cashLedger = AccountLedger::where('ledger_type', 'cash')
+                                ->where('ledger_name', 'Cash in Hand')
+                                ->first();
+
+                            if ($cashLedger) {
+                                // Find and delete the expense's ledger transaction
+                                $expenseTransaction = LedgerTransaction::where('referenceable_type', Expense::class)
+                                    ->where('referenceable_id', $expense->id)
+                                    ->first();
+
+                                if ($expenseTransaction) {
+                                    // Reverse the cash deduction (add money back)
+                                    $cashLedger->current_balance += $invoice->coolie_expense;
+                                    $cashLedger->save();
+
+                                    // Delete the transaction
+                                    $expenseTransaction->delete();
+
+                                    Log::info("Expense ledger transaction reversed for invoice {$invoice->invoice_number}");
+                                }
+                            }
+
+                            // Delete the expense record
+                            $expense->delete();
+
+                            Log::info("Expense entry deleted for invoice {$invoice->invoice_number}");
+                        }
+                    }
+
+                    // ========================================
+                    // 4. DELETE PAYMENT ALLOCATIONS
+                    // ========================================
+                    // DB::table('invoice_payment_allocations')
+                    //     ->where('invoice_id', $invoice->id)
+                    //     ->delete();
                 });
 
-                Log::info("Invoice {$invoice->invoice_number} deleted successfully with stock and ledger reversal.");
+                Log::info("Invoice {$invoice->invoice_number} deleted successfully with all reversals.");
             } catch (\Exception $e) {
                 Log::error("Error deleting invoice {$invoice->invoice_number}: " . $e->getMessage());
                 throw $e; // Re-throw to prevent deletion if something fails
             }
         });
+
 
         // ✅ WHEN INVOICE IS BEING RESTORED
         static::restoring(function ($invoice) {
@@ -234,7 +285,7 @@ class Invoice extends Model
                 DB::transaction(function () use ($invoice) {
 
                     // ========================================
-                    // 1. RESTORE STOCK (Reverse the reversal)
+                    // 1. RESTORE STOCK
                     // ========================================
                     if ($invoice->is_cancelled) {
                         foreach ($invoice->items as $item) {
@@ -280,6 +331,51 @@ class Invoice extends Model
                         $ledger->save();
 
                         Log::info("Ledger transactions restored for invoice {$invoice->invoice_number}");
+                    }
+
+                    // ========================================
+                    // 3. RESTORE COOLIE/DELIVERY EXPENSE (✅ NEW)
+                    // ========================================
+                    if ($invoice->coolie_expense > 0) {
+                        // Find the soft-deleted expense
+                        $expense = Expense::withTrashed()
+                            ->where('reference_number', $invoice->invoice_number)
+                            ->whereIn('expense_title', [
+                                "Coolie Charges for invoice {$invoice->invoice_number}",
+                                "Delivery Charges for invoice {$invoice->invoice_number}"
+                            ])
+                            ->first();
+
+                        if ($expense) {
+                            // Restore the expense
+                            $expense->restore();
+
+                            // Find cash ledger
+                            $cashLedger = AccountLedger::where('ledger_type', 'cash')
+                                ->where('ledger_name', 'Cash in Hand')
+                                ->first();
+
+                            if ($cashLedger) {
+                                // Find and restore the expense's ledger transaction
+                                $expenseTransaction = LedgerTransaction::withTrashed()
+                                    ->where('referenceable_type', Expense::class)
+                                    ->where('referenceable_id', $expense->id)
+                                    ->first();
+
+                                if ($expenseTransaction) {
+                                    // Restore transaction
+                                    $expenseTransaction->restore();
+
+                                    // Re-deduct from cash
+                                    $cashLedger->current_balance -= $invoice->coolie_expense;
+                                    $cashLedger->save();
+
+                                    Log::info("Expense ledger transaction restored for invoice {$invoice->invoice_number}");
+                                }
+                            }
+
+                            Log::info("Expense entry restored for invoice {$invoice->invoice_number}");
+                        }
                     }
                 });
 

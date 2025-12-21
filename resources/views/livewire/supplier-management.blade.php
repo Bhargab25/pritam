@@ -500,11 +500,9 @@
                         label="Transaction Type"
                         wire:model.live="newTransaction.type"
                         :options="[
-                ['id' => 'purchase', 'name' => 'Purchase'],
-                ['id' => 'payment', 'name' => 'Payment'],
-                ['id' => 'return', 'name' => 'Return'],
-                ['id' => 'adjustment', 'name' => 'Adjustment'],
-            ]"
+                            ['id' => 'payment', 'name' => 'Payment'],
+                            ['id' => 'return', 'name' => 'Return'],
+                        ]"
                         option-value="id"
                         option-label="name"
                         required />

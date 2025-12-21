@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Http\Request;
 use App\Livewire\UserProfile;
 use App\Livewire\CashFlow;
+use App\Livewire\Dashboard;
 
 Route::get('/', function () {
     if (Auth::check()) {
@@ -32,18 +33,18 @@ Route::post('/logout', function (Request $request) {
     // Log the logout activity if user exists
     if (Auth::check()) {
         $user = Auth::user();
-        
+
         // Log logout activity (if you have the UserActivityLog model)
         if (method_exists($user, 'logActivity')) {
             $user->logActivity('logout');
         }
     }
-    
+
     Auth::logout();
-    
+
     $request->session()->invalidate();
     $request->session()->regenerateToken();
-    
+
     return redirect('/login');
 })->middleware('auth')->name('logout');
 
@@ -52,7 +53,7 @@ Route::middleware(['auth'])->group(function () {
         ->name('profile.edit');
 });
 
-Route::view('dashboard', 'dashboard')
+Route::get('/dashboard', Dashboard::class)
     ->middleware(['auth', 'verified'])
     ->name('dashboard');
 
@@ -104,6 +105,10 @@ Route::get('/sales-analytics', SalesAnalytics::class)
 Route::get('/expenses', ExpenseManagement::class)
     ->middleware(['auth', 'verified'])
     ->name('expenses.index');
+
+Route::get('/daily-summary', \App\Livewire\DailyBusinessSummary::class)
+    ->middleware(['auth'])
+    ->name('daily.summary');
 
 Route::get('/settings/backup', BackupExport::class)
     ->middleware(['auth', 'verified'])

@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use App\Models\Invoice;
 use Illuminate\Support\Facades\DB;
+use Livewire\Attributes\Computed;
 
 class ClientManagement extends Component
 {
@@ -106,6 +107,9 @@ class ClientManagement extends Component
         '3month' => 'Last 3 Months',
     ];
 
+    public $showPaymentPreview = false;
+    public $paymentAllocationPreview = [];
+
     public function mount()
     {
         // Load unique cities for location filter
@@ -122,13 +126,66 @@ class ClientManagement extends Component
 
         // Initialize new transaction
         $this->newTransaction = [
-            'date' => '',
-            'type' => 'sale',
+            'date' => now()->format('Y-m-d'),
+            'type' => 'payment',
             'description' => '',
             'amount' => 0,
             'reference' => '',
             'payment_method' => 'cash',
             'bank_account_id' => null,
+        ];
+        $this->paymentAllocationPreview = [];
+    }
+
+    public function updatedNewTransaction($value, $key)
+    {
+        // Trigger preview when amount or type changes
+        if ($key === 'amount' || $key === 'type') {
+            $this->updatePaymentPreview();
+        }
+    }
+
+    private function updatePaymentPreview()
+    {
+        if (!$this->selectedClient || $this->newTransaction['type'] !== 'payment') {
+            $this->paymentAllocationPreview = [];
+            return;
+        }
+
+        $amount = (float)($this->newTransaction['amount'] ?? 0);
+        if ($amount <= 0) {
+            $this->paymentAllocationPreview = [];
+            return;
+        }
+
+        $invoices = Invoice::where('client_id', $this->selectedClient->id)
+            ->whereIn('payment_status', ['unpaid', 'partial'])
+            ->where('balance_amount', '>', 0)
+            ->orderBy('invoice_date', 'asc')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        $remainingAmount = $amount;
+        $preview = [];
+
+        foreach ($invoices as $invoice) {
+            if ($remainingAmount <= 0) break;
+
+            $allocateAmount = min($remainingAmount, $invoice->balance_amount);
+            $preview[] = [
+                'invoice_number' => $invoice->invoice_number,
+                'invoice_date' => $invoice->invoice_date->format('d M Y'),
+                'balance_before' => $invoice->balance_amount,
+                'will_allocate' => $allocateAmount,
+                'balance_after' => $invoice->balance_amount - $allocateAmount,
+            ];
+            $remainingAmount -= $allocateAmount;
+        }
+
+        $this->paymentAllocationPreview = [
+            'allocations' => $preview,
+            'total_allocated' => $amount - $remainingAmount,
+            'remaining' => $remainingAmount,
         ];
     }
 
@@ -530,6 +587,7 @@ class ClientManagement extends Component
                         case 'sale':
                             $debitAmount = $this->newTransaction['amount']; // Increase client balance (what they owe)
                             break;
+
                         case 'payment':
                             $creditAmount = $this->newTransaction['amount']; // Decrease client balance (payment received)
 
@@ -555,11 +613,12 @@ class ClientManagement extends Component
                             if ($allocationResult['remaining_amount'] > 0) {
                                 $this->newTransaction['description'] .= " | Advance: ₹" . number_format($allocationResult['remaining_amount'], 2);
                             }
-
                             break;
+
                         case 'return':
                             $creditAmount = $this->newTransaction['amount']; // Decrease client balance
                             break;
+
                         case 'adjustment':
                             if ($this->newTransaction['amount'] >= 0) {
                                 $debitAmount = $this->newTransaction['amount'];
@@ -585,8 +644,54 @@ class ClientManagement extends Component
                     $ledger->current_balance += ($debitAmount - $creditAmount);
                     $ledger->save();
 
-                    // Record bank transaction if payment method is bank
-                    if ($this->newTransaction['payment_method'] === 'bank' && $this->newTransaction['bank_account_id']) {
+                    // ✅ NEW: Record cash/bank transaction
+                    if ($this->newTransaction['payment_method'] === 'cash') {
+                        // Get or create cash ledger
+                        $cashLedger = AccountLedger::firstOrCreate(
+                            ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
+                            [
+                                'opening_balance' => 0,
+                                'opening_balance_type' => 'debit',
+                                'current_balance' => 0,
+                                'is_active' => true,
+                            ]
+                        );
+
+                        // Determine cash transaction type
+                        // Payment from client = money IN (debit to cash)
+                        // Sale/Return = depends on context
+                        $cashDebit = 0;
+                        $cashCredit = 0;
+
+                        if ($this->newTransaction['type'] === 'payment') {
+                            // Money received - increase cash
+                            $cashDebit = $this->newTransaction['amount'];
+                        } elseif ($this->newTransaction['type'] === 'sale') {
+                            // Direct cash sale - increase cash
+                            $cashDebit = $this->newTransaction['amount'];
+                        } elseif ($this->newTransaction['type'] === 'return') {
+                            // Return - decrease cash
+                            $cashCredit = $this->newTransaction['amount'];
+                        }
+
+                        // Create cash ledger transaction
+                        if ($cashDebit > 0 || $cashCredit > 0) {
+                            $cashLedger->transactions()->create([
+                                'date' => $this->newTransaction['date'],
+                                'type' => $this->newTransaction['type'],
+                                'description' => "Client: {$this->selectedClient->name} - {$this->newTransaction['description']}",
+                                'debit_amount' => $cashDebit,
+                                'credit_amount' => $cashCredit,
+                                'reference' => $this->newTransaction['reference'],
+                                'referenceable_type' => LedgerTransaction::class,
+                                'referenceable_id' => $ledgerTransaction->id,
+                            ]);
+
+                            // Update cash balance
+                            $cashLedger->current_balance += ($cashDebit - $cashCredit);
+                            $cashLedger->save();
+                        }
+                    } elseif ($this->newTransaction['payment_method'] === 'bank' && $this->newTransaction['bank_account_id']) {
                         $bankAccount = CompanyBankAccount::find($this->newTransaction['bank_account_id']);
 
                         if ($bankAccount) {
@@ -598,7 +703,7 @@ class ClientManagement extends Component
                             $bankAccount->recordTransaction(
                                 $bankTransactionType,
                                 $bankAmount,
-                                "{$this->newTransaction['type']} transaction for client: {$this->selectedClient->name}",
+                                "Client: {$this->selectedClient->name} - {$this->newTransaction['type']} transaction",
                                 [
                                     'transaction_date' => $this->newTransaction['date'],
                                     'category' => $this->newTransaction['type'],
@@ -635,6 +740,7 @@ class ClientManagement extends Component
 
 
 
+    #[Computed]
     public function getPaymentAllocationPreview()
     {
         if (!$this->selectedClient || $this->newTransaction['type'] !== 'payment') {

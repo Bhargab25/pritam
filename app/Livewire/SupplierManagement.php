@@ -473,8 +473,54 @@ class SupplierManagement extends Component
                     $ledger->current_balance += ($debitAmount - $creditAmount);
                     $ledger->save();
 
-                    // Record bank transaction if payment method is bank
-                    if ($this->newTransaction['payment_method'] === 'bank' && $this->newTransaction['bank_account_id']) {
+                    // ✅ NEW: Record cash/bank transaction
+                    if ($this->newTransaction['payment_method'] === 'cash') {
+                        // Get or create cash ledger
+                        $cashLedger = AccountLedger::firstOrCreate(
+                            ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
+                            [
+                                'opening_balance' => 0,
+                                'opening_balance_type' => 'debit',
+                                'current_balance' => 0,
+                                'is_active' => true,
+                            ]
+                        );
+
+                        // Determine cash transaction type
+                        // Payment to supplier = money OUT (credit from cash)
+                        // Purchase = depends on if paid immediately
+                        $cashDebit = 0;
+                        $cashCredit = 0;
+
+                        if ($this->newTransaction['type'] === 'payment') {
+                            // Money paid out - decrease cash
+                            $cashCredit = $this->newTransaction['amount'];
+                        } elseif ($this->newTransaction['type'] === 'purchase') {
+                            // Direct cash purchase - decrease cash
+                            $cashCredit = $this->newTransaction['amount'];
+                        } elseif ($this->newTransaction['type'] === 'return') {
+                            // Return - increase cash
+                            $cashDebit = $this->newTransaction['amount'];
+                        }
+
+                        // Create cash ledger transaction
+                        if ($cashDebit > 0 || $cashCredit > 0) {
+                            $cashLedger->transactions()->create([
+                                'date' => $this->newTransaction['date'],
+                                'type' => $this->newTransaction['type'],
+                                'description' => "Supplier: {$this->selectedSupplier->name} - {$this->newTransaction['description']}",
+                                'debit_amount' => $cashDebit,
+                                'credit_amount' => $cashCredit,
+                                'reference' => $this->newTransaction['reference'],
+                                'referenceable_type' => LedgerTransaction::class,
+                                'referenceable_id' => $ledgerTransaction->id,
+                            ]);
+
+                            // Update cash balance
+                            $cashLedger->current_balance += ($cashDebit - $cashCredit);
+                            $cashLedger->save();
+                        }
+                    } elseif ($this->newTransaction['payment_method'] === 'bank' && $this->newTransaction['bank_account_id']) {
                         $bankAccount = CompanyBankAccount::find($this->newTransaction['bank_account_id']);
 
                         if ($bankAccount) {
@@ -486,7 +532,7 @@ class SupplierManagement extends Component
                             $bankAccount->recordTransaction(
                                 $bankTransactionType,
                                 $bankAmount,
-                                "{$this->newTransaction['type']} transaction for supplier: {$this->selectedSupplier->name}",
+                                "Supplier: {$this->selectedSupplier->name} - {$this->newTransaction['type']} transaction",
                                 [
                                     'transaction_date' => $this->newTransaction['date'],
                                     'category' => $this->newTransaction['type'],
@@ -520,6 +566,7 @@ class SupplierManagement extends Component
             }
         }
     }
+
 
 
 

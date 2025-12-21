@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Document</title>
     <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
     @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 
@@ -134,10 +135,10 @@
 
                 {{-- Reports & Analytics --}}
                 <x-mary-menu-sub title="Reports & Analytics" icon="o-chart-pie">
-                    <x-mary-menu-item title="Stock Reports" icon="o-chart-bar-square" link="/reports/stock" />
+                    <x-mary-menu-item title="Daily Summary" icon="o-chart-bar-square" link="/daily-summary" />
                     <x-mary-menu-item title="Sales Analytics" icon="o-chart-bar" link="/sales-analytics" />
-                    <x-mary-menu-item title="Financial Reports" icon="o-calculator" link="/reports/financial" />
-                    <x-mary-menu-item title="Business Overview" icon="o-presentation-chart-bar" link="/reports/overview" />
+                 {{--   <x-mary-menu-item title="Financial Reports" icon="o-calculator" link="/reports/financial" />
+                    <x-mary-menu-item title="Business Overview" icon="o-presentation-chart-bar" link="/reports/overview" /> --}}
                 </x-mary-menu-sub>
 
                 <x-mary-menu-separator />

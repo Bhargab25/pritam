@@ -125,8 +125,9 @@ class Expense extends Model
 
         // Use database transaction to prevent race conditions
         return DB::transaction(function () use ($prefix, $year, $month, $date) {
-            // Lock the table to prevent concurrent inserts
-            $lastExpense = static::lockForUpdate()
+            // ✅ Include soft-deleted records to avoid reusing numbers
+            $lastExpense = static::withTrashed()
+                ->lockForUpdate()
                 ->where('expense_ref', 'like', "$prefix-$year$month$date-%")
                 ->orderBy('expense_ref', 'desc')
                 ->first();
@@ -141,9 +142,9 @@ class Expense extends Model
 
             $expenseRef = "$prefix-$year$month$date-" . str_pad($newNumber, 4, '0', STR_PAD_LEFT);
 
-            // Double-check uniqueness
+            // ✅ Double-check uniqueness (including soft-deleted)
             $attempts = 0;
-            while (static::where('expense_ref', $expenseRef)->exists() && $attempts < 10) {
+            while (static::withTrashed()->where('expense_ref', $expenseRef)->exists() && $attempts < 10) {
                 $newNumber++;
                 $expenseRef = "$prefix-$year$month$date-" . str_pad($newNumber, 4, '0', STR_PAD_LEFT);
                 $attempts++;

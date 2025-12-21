@@ -563,9 +563,7 @@
 
                 {{-- Payment Allocation Preview --}}
                 @if($newTransaction['type'] === 'payment' && $newTransaction['amount'] > 0)
-                @php
-                $preview = $this->getPaymentAllocationPreview();
-                @endphp
+                @php $preview = $this->getPaymentAllocationPreview() @endphp
 
                 @if(!empty($preview['allocations']))
                 <div class="bg-info/10 p-4 rounded-lg mb-4">
@@ -599,11 +597,9 @@
                         label="Transaction Type"
                         wire:model.live="newTransaction.type"
                         :options="[
-                ['id' => 'sale', 'name' => 'Sale'],
-                ['id' => 'payment', 'name' => 'Payment'],
-                ['id' => 'return', 'name' => 'Return'],
-                ['id' => 'adjustment', 'name' => 'Adjustment'],
-            ]"
+                            ['id' => 'payment', 'name' => 'Payment'],
+                            ['id' => 'return', 'name' => 'Return'],
+                        ]"
                         option-value="id"
                         option-label="name"
                         required />
@@ -614,6 +610,7 @@
                         step="0.01"
                         min="0"
                         wire:model.live.number="newTransaction.amount"
+                        wire:keydown.enter="updatePaymentPreview"
                         prefix="₹"
                         required />
 

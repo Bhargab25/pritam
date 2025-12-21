@@ -998,7 +998,7 @@ class InvoiceManagement extends Component
 
                 // Create ledger entry if client invoice
                 if ($this->paymentInvoice->client_id && $this->paymentInvoice->client->ledger) {
-                    LedgerTransaction::create([
+                    $ledgerTransaction = LedgerTransaction::create([
                         'ledger_id' => $this->paymentInvoice->client->ledger->id,
                         'date' => now(),
                         'type' => 'payment',
@@ -1007,6 +1007,40 @@ class InvoiceManagement extends Component
                         'credit_amount' => $this->paymentAmount,
                         'reference' => $this->paymentReference ?: "PAY-{$payment->id}",
                     ]);
+
+                    // Update client ledger balance
+                    $this->paymentInvoice->client->ledger->current_balance -= $this->paymentAmount;
+                    $this->paymentInvoice->client->ledger->save();
+
+                    // ✅ NEW: Record cash/bank transaction
+                    if ($this->paymentMethod === 'cash') {
+                        // Get or create cash ledger
+                        $cashLedger = AccountLedger::firstOrCreate(
+                            ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
+                            [
+                                'opening_balance' => 0,
+                                'opening_balance_type' => 'debit',
+                                'current_balance' => 0,
+                                'is_active' => true,
+                            ]
+                        );
+
+                        // Payment received = money IN (debit to cash)
+                        $cashLedger->transactions()->create([
+                            'date' => now(),
+                            'type' => 'payment',
+                            'description' => "Invoice payment - {$this->paymentInvoice->invoice_number} from {$this->paymentInvoice->client->name}",
+                            'debit_amount' => $this->paymentAmount,
+                            'credit_amount' => 0,
+                            'reference' => $this->paymentReference ?: "PAY-{$payment->id}",
+                            'referenceable_type' => InvoicePayment::class,
+                            'referenceable_id' => $payment->id,
+                        ]);
+
+                        // Update cash balance
+                        $cashLedger->current_balance += $this->paymentAmount;
+                        $cashLedger->save();
+                    }
                 }
             });
 
@@ -1018,6 +1052,7 @@ class InvoiceManagement extends Component
             $this->error('Error recording payment: ' . $e->getMessage());
         }
     }
+
 
     public function deleteInvoice($invoiceId)
     {

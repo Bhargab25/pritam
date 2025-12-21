@@ -56,6 +56,9 @@ class PaymentManagement extends Component
         'description' => '',
     ];
 
+    public $bankAccounts ;
+    public $formattedBankAccounts = [];
+
     // Statistics
     public $totalReceived = 0;
     public $totalPaid = 0;
@@ -73,6 +76,20 @@ class PaymentManagement extends Component
         $this->makePayment['date'] = now()->format('Y-m-d');
 
         $this->calculateStatistics();
+        $this->loadBankAccounts();
+    }
+
+    public function loadBankAccounts()
+    {
+        $this->bankAccounts = CompanyBankAccount::active()->get();
+
+        // ✅ Format for Mary UI Select (array format)
+        $this->formattedBankAccounts = $this->bankAccounts->map(function ($account) {
+            return [
+                'value' => $account->id,
+                'label' => $account->bank_name . ' - ' . $account->account_number
+            ];
+        })->toArray();
     }
 
     public function calculateStatistics()
@@ -313,9 +330,37 @@ class PaymentManagement extends Component
                 $ledger->current_balance -= $this->receivePayment['amount'];
                 $ledger->save();
 
-                // Record bank transaction if payment method is bank
-                if ($this->receivePayment['payment_method'] === 'bank') {
+                // ✅ NEW: Record cash/bank transaction
+                if ($this->receivePayment['payment_method'] === 'cash') {
+                    // Get or create cash ledger
+                    $cashLedger = AccountLedger::firstOrCreate(
+                        ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
+                        [
+                            'opening_balance' => 0,
+                            'opening_balance_type' => 'debit',
+                            'current_balance' => 0,
+                            'is_active' => true,
+                        ]
+                    );
+
+                    // Payment received = money IN (debit to cash)
+                    $cashLedger->transactions()->create([
+                        'date' => $this->receivePayment['date'],
+                        'type' => 'payment',
+                        'description' => "Payment received from client: {$client->name} - {$description}",
+                        'debit_amount' => $this->receivePayment['amount'],
+                        'credit_amount' => 0,
+                        'reference' => $this->receivePayment['reference'],
+                        'referenceable_type' => LedgerTransaction::class,
+                        'referenceable_id' => $ledgerTransaction->id,
+                    ]);
+
+                    // Update cash balance
+                    $cashLedger->current_balance += $this->receivePayment['amount'];
+                    $cashLedger->save();
+                } elseif ($this->receivePayment['payment_method'] === 'bank') {
                     $bankAccount = CompanyBankAccount::find($this->receivePayment['bank_account_id']);
+
                     if ($bankAccount) {
                         $bankAccount->recordTransaction(
                             'credit',
@@ -342,6 +387,7 @@ class PaymentManagement extends Component
             $this->error('Error', 'Failed to record payment: ' . $e->getMessage());
         }
     }
+
 
     public function saveMakePayment()
     {
@@ -392,9 +438,37 @@ class PaymentManagement extends Component
                 $ledger->current_balance -= $this->makePayment['amount'];
                 $ledger->save();
 
-                // Record bank transaction if payment method is bank
-                if ($this->makePayment['payment_method'] === 'bank') {
+                // ✅ NEW: Record cash/bank transaction
+                if ($this->makePayment['payment_method'] === 'cash') {
+                    // Get or create cash ledger
+                    $cashLedger = AccountLedger::firstOrCreate(
+                        ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
+                        [
+                            'opening_balance' => 0,
+                            'opening_balance_type' => 'debit',
+                            'current_balance' => 0,
+                            'is_active' => true,
+                        ]
+                    );
+
+                    // Payment made = money OUT (credit from cash)
+                    $cashLedger->transactions()->create([
+                        'date' => $this->makePayment['date'],
+                        'type' => 'payment',
+                        'description' => "Payment made to supplier: {$supplier->name} - {$this->makePayment['description']}",
+                        'debit_amount' => 0,
+                        'credit_amount' => $this->makePayment['amount'],
+                        'reference' => $this->makePayment['reference'],
+                        'referenceable_type' => LedgerTransaction::class,
+                        'referenceable_id' => $ledgerTransaction->id,
+                    ]);
+
+                    // Update cash balance
+                    $cashLedger->current_balance -= $this->makePayment['amount'];
+                    $cashLedger->save();
+                } elseif ($this->makePayment['payment_method'] === 'bank') {
                     $bankAccount = CompanyBankAccount::find($this->makePayment['bank_account_id']);
+
                     if ($bankAccount) {
                         $bankAccount->recordTransaction(
                             'debit',
@@ -421,6 +495,7 @@ class PaymentManagement extends Component
             $this->error('Error', 'Failed to record payment: ' . $e->getMessage());
         }
     }
+
 
     public function render()
     {

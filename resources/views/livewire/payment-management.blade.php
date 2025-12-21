@@ -191,7 +191,6 @@
     </div>
 
     {{-- Receive Payment Modal --}}
-    {{-- Receive Payment Modal --}}
     <x-mary-modal wire:model="showReceivePaymentModal" title="Receive Payment from Client" box-class="max-w-4xl">
         <div class="space-y-4">
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -253,15 +252,20 @@
                             option-label="label"
                             required />
 
+                        {{-- Bank Account Selection (shown only if payment method is bank) --}}
                         @if($receivePayment['payment_method'] === 'bank')
                         <x-mary-select
                             label="Bank Account *"
                             wire:model="receivePayment.bank_account_id"
                             :options="$bankAccounts"
                             option-value="id"
-                            :option-label="fn($account) => $account->bank_name . ' - ' . $account->account_number"
+                            option-label="display_name"
+                            icon="o-building-library"
                             placeholder="Select bank account"
+                            hint="Select the bank account for this transaction"
+                            :error="$errors->first('receivePayment.bank_account_id')"
                             required />
+                        @else
                         @endif
                     </div>
 
@@ -414,8 +418,11 @@
                     wire:model="makePayment.bank_account_id"
                     :options="$bankAccounts"
                     option-value="id"
-                    :option-label="fn($account) => $account->bank_name . ' - ' . $account->account_number"
+                    option-label="display_name"
+                    icon="o-building-library"
                     placeholder="Select bank account"
+                    hint="Select the bank account for this transaction"
+                    :error="$errors->first('makePayment.bank_account_id')"
                     required />
                 @endif
             </div>

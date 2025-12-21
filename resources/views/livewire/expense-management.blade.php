@@ -157,7 +157,7 @@
             @endscope
 
             @scope('cell_category', $expense)
-            <span class="badge badge-outline">{{ $expense->category->name }}</span>
+            <span class="badge">{{ $expense->category->name }}</span>
             @endscope
 
             @scope('cell_amount', $expense)
