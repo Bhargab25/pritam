@@ -13,6 +13,7 @@ use App\Models\Client;
 use App\Models\StockMovement;
 use App\Models\LedgerTransaction;
 use App\Models\MonthlyBill;
+use App\Models\BankTransaction;
 use App\Services\InvoicePdfService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -495,231 +496,893 @@ class InvoiceManagement extends Component
     //     }
     // }
 
+    public function editInvoice($invoiceId)
+    {
+        try {
+            $invoice = Invoice::with(['items', 'client', 'payments'])->find($invoiceId);
+
+            if (!$invoice) {
+                $this->error('Invoice not found');
+                return;
+            }
+
+            // Load all invoice data into form
+            $this->editingInvoice = $invoice->id;
+            $this->invoiceType = $invoice->invoice_type;
+            $this->invoiceDate = $invoice->invoice_date->format('Y-m-d');
+            $this->dueDate = $invoice->due_date ? $invoice->due_date->format('Y-m-d') : null;
+            $this->clientId = $invoice->client_id;
+            $this->clientName = $invoice->client_name;
+            $this->clientPhone = $invoice->client_phone;
+            $this->clientAddress = $invoice->client_address;
+            $this->isGstInvoice = $invoice->is_gst_invoice;
+            $this->clientGstin = $invoice->client_gstin;
+            $this->placeOfSupply = $invoice->place_of_supply;
+            $this->gstType = $invoice->gst_type ?? 'cgst+sgst';
+            $this->notes = $invoice->notes;
+            $this->termsConditions = $invoice->terms_conditions;
+            $this->coolieExpense = $invoice->coolie_expense ?? 0;
+            $this->invoicePaymentMethod = $invoice->payment_method ?? 'cash';
+            $this->invoiceBankAccountId = $invoice->bank_account_id;
+
+            // Load invoice items
+            $this->invoiceItems = [];
+            foreach ($invoice->items as $item) {
+                $this->invoiceItems[] = [
+                    'productid' => $item->product_id,
+                    'productname' => $item->product_name,
+                    'quantity' => $item->quantity,
+                    'unitprice' => $item->unit_price,
+                    'invoiceunit' => $item->invoice_unit,
+                    'discountpercentage' => $item->discount_percentage ?? 0,
+                    'cgstrate' => $item->cgst_rate ?? 0,
+                    'sgstrate' => $item->sgst_rate ?? 0,
+                    'igstrate' => $item->igst_rate ?? 0,
+                ];
+            }
+
+            $this->showInvoiceModal = true;
+
+            // Warn if there are payments
+            if ($invoice->paidamount > 0) {
+                $this->warning('This invoice has payments of ₹' . number_format($invoice->paidamount, 2) . '. Please review carefully.');
+            }
+        } catch (\Exception $e) {
+            Log::error('Error loading invoice for edit: ' . $e->getMessage());
+            $this->error('Error loading invoice: ' . $e->getMessage());
+        }
+    }
+
+    // Modify existing saveInvoice
     public function saveInvoice()
     {
         $this->validate();
 
-        // Additional validation
-        if (empty($this->invoiceItems) || !$this->invoiceItems[0]['product_id']) {
+        if (empty($this->invoiceItems) || !$this->invoiceItems[0]['productid']) {
             $this->error('At least one product is required');
             return;
         }
 
         try {
-            DB::transaction(function () {
-                // Create invoice
-                $invoice = Invoice::create([
-                    'invoice_number' => Invoice::generateInvoiceNumber($this->invoiceType),
-                    'invoice_type' => $this->invoiceType,
-                    'invoice_date' => $this->invoiceDate,
-                    'due_date' => $this->dueDate,
-                    'client_id' => $this->invoiceType === 'client' ? $this->clientId : null,
-                    'client_name' => $this->invoiceType === 'cash' ? $this->clientName : null,
-                    'client_phone' => $this->clientPhone,
-                    'client_address' => $this->clientAddress,
-                    'is_gst_invoice' => $this->isGstInvoice,
-                    'client_gstin' => $this->clientGstin,
-                    'place_of_supply' => $this->placeOfSupply,
-                    'gst_type' => $this->gstType,
-                    'notes' => $this->notes,
-                    'terms_conditions' => $this->termsConditions,
-                    'created_by' => auth()->user()->name,
-                    'coolie_expense' => $this->coolieExpense ?? 0,
-                    'payment_method' => $this->invoiceType === 'cash' ? $this->paymentMethod : null,
-                    'bank_account_id' => $this->invoiceType === 'cash' && $this->paymentMethod === 'bank' ? $this->bankAccountId : null,
-                ]);
-
-                $subtotal = 0;
-                $totalTax = 0;
-
-                // Create invoice items and update stock
-                foreach ($this->invoiceItems as $itemData) {
-                    if (empty($itemData['product_id']) || empty($itemData['quantity'])) continue;
-
-                    $product = Product::find($itemData['product_id']);
-
-                    // Check stock availability
-                    if ($product->stock_quantity < $itemData['quantity']) {
-                        throw new \Exception("Insufficient stock for product: {$product->name}");
-                    }
-
-                    // Calculate amounts
-                    $unitPrice = $itemData['unit_price'];
-                    $quantity = $itemData['quantity'];
-                    $discountPercent = $itemData['discount_percentage'] ?? 0;
-
-                    $lineTotal = $unitPrice * $quantity;
-                    $discountAmount = ($lineTotal * $discountPercent) / 100;
-                    $taxableAmount = $lineTotal - $discountAmount;
-
-                    // Calculate GST
-                    $cgstAmount = ($taxableAmount * ($itemData['cgst_rate'] ?? 0)) / 100;
-                    $sgstAmount = ($taxableAmount * ($itemData['sgst_rate'] ?? 0)) / 100;
-                    $igstAmount = ($taxableAmount * ($itemData['igst_rate'] ?? 0)) / 100;
-                    $totalItemAmount = $taxableAmount + $cgstAmount + $sgstAmount + $igstAmount;
-
-                    // Create invoice item
-                    InvoiceItem::create([
-                        'invoice_id' => $invoice->id,
-                        'product_id' => $product->id,
-                        'product_name' => $product->name,
-                        'product_unit' => $product->unit,
-                        'invoice_unit' => $itemData['invoice_unit'],
-                        'unit_conversion_factor' => 1,
-                        'quantity' => $quantity,
-                        'unit_price' => $unitPrice,
-                        'discount_percentage' => $discountPercent,
-                        'discount_amount' => $discountAmount,
-                        'taxable_amount' => $taxableAmount,
-                        'cgst_rate' => $itemData['cgst_rate'] ?? 0,
-                        'sgst_rate' => $itemData['sgst_rate'] ?? 0,
-                        'igst_rate' => $itemData['igst_rate'] ?? 0,
-                        'cgst_amount' => $cgstAmount,
-                        'sgst_amount' => $sgstAmount,
-                        'igst_amount' => $igstAmount,
-                        'total_amount' => $totalItemAmount,
-                    ]);
-
-                    // Update product stock
-                    $product->stock_quantity -= $quantity;
-                    $product->save();
-
-                    // Create stock movement
-                    StockMovement::create([
-                        'product_id' => $product->id,
-                        'type' => 'out',
-                        'quantity' => $quantity,
-                        'reason' => 'sale',
-                        'reference_type' => Invoice::class,
-                        'reference_id' => $invoice->id,
-                    ]);
-
-                    $subtotal += $taxableAmount;
-                    $totalTax += ($cgstAmount + $sgstAmount + $igstAmount);
-                }
-
-                $totalAmount = $subtotal + $totalTax;
-                $finalAmount = $totalAmount + ($this->coolieExpense ?? 0);
-
-                // Update invoice totals
-                $invoice->update([
-                    'subtotal' => $subtotal,
-                    'cgst_amount' => $invoice->items->sum('cgst_amount'),
-                    'sgst_amount' => $invoice->items->sum('sgst_amount'),
-                    'igst_amount' => $invoice->items->sum('igst_amount'),
-                    'total_tax' => $totalTax,
-                    'total_amount' => $totalAmount,
-                    'final_amount' => $finalAmount,
-                    'balance_amount' => $finalAmount,
-                ]);
-
-                // Get cash ledger
-                $cashLedger = AccountLedger::firstOrCreate(
-                    ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
-                    [
-                        'opening_balance' => 0,
-                        'opening_balance_type' => 'debit',
-                        'current_balance' => 0,
-                        'is_active' => true,
-                    ]
-                );
-
-                // Handle payment recording based on invoice type
-                if ($this->invoiceType === 'cash') {
-                    // Cash invoice - record immediate payment
-                    if ($this->paymentMethod === 'cash') {
-                        // Add full amount (including coolie) to cash ledger
-                        $cashLedger->transactions()->create([
-                            'date' => $this->invoiceDate,
-                            'type' => 'sale',
-                            'description' => "Cash sale - Invoice {$invoice->invoice_number}",
-                            'debit_amount' => $finalAmount,
-                            'credit_amount' => 0,
-                            'reference' => $invoice->invoice_number,
-                            'referenceable_type' => Invoice::class,
-                            'referenceable_id' => $invoice->id,
-                        ]);
-
-                        $cashLedger->current_balance += $finalAmount;
-                        $cashLedger->save();
-                    } elseif ($this->paymentMethod === 'bank') {
-                        // Add invoice amount to bank account
-                        $bankAccount = CompanyBankAccount::find($this->bankAccountId);
-                        if ($bankAccount) {
-                            $bankAccount->recordTransaction(
-                                'credit',
-                                $finalAmount,
-                                "Invoice payment - {$invoice->invoice_number}",
-                                [
-                                    'transaction_date' => $this->invoiceDate,
-                                    'category' => 'sales',
-                                    'reference_number' => $invoice->invoice_number,
-                                    'transactionable_type' => Invoice::class,
-                                    'transactionable_id' => $invoice->id,
-                                ]
-                            );
-                        }
-                    }
-
-                    // Mark cash invoice as paid
-                    $invoice->update([
-                        'paid_amount' => $finalAmount,
-                        'balance_amount' => 0,
-                        'payment_status' => 'paid',
-                    ]);
-                } elseif ($this->invoiceType === 'client') {
-                    // Client invoice - create ledger entry (unpaid)
-                    $client = Client::find($this->clientId);
-                    if ($client) {
-                        // Ensure client has a ledger
-                        if (!$client->ledger) {
-                            $client->ledger()->create([
-                                'ledger_name' => $client->name,
-                                'ledger_type' => 'client',
-                                'opening_balance' => 0,
-                                'opening_balance_type' => 'debit',
-                                'current_balance' => 0,
-                                'is_active' => true,
-                            ]);
-                            $client->refresh();
-                        }
-
-                        // Create debit entry (client owes money)
-                        $client->ledger->transactions()->create([
-                            'date' => $this->invoiceDate,
-                            'type' => 'sale',
-                            'description' => "Sales invoice - {$invoice->invoice_number}",
-                            'debit_amount' => $finalAmount,
-                            'credit_amount' => 0,
-                            'reference' => $invoice->invoice_number,
-                            'referenceable_type' => Invoice::class,
-                            'referenceable_id' => $invoice->id,
-                        ]);
-
-                        // Update client ledger balance
-                        $client->ledger->current_balance += $finalAmount;
-                        $client->ledger->save();
-                    }
-                }
-                // Record and deduct coolie expense from cash
-                if ($this->coolieExpense > 0) {
-                    $this->recordCoolieExpense($invoice, $cashLedger);
-                }
-
-                $this->success('Invoice created successfully!');
-                $this->closeInvoiceModal();
-                $this->calculateStats();
-
-                // Generate PDF for client invoices
-                if ($this->invoiceType === 'client') {
-                    $this->dispatch('invoice-created', ['invoiceId' => $invoice->id]);
-                }
-            });
+            if ($this->editingInvoice) {
+                $this->updateInvoice();
+            } else {
+                $this->createNewInvoice();
+            }
         } catch (\Exception $e) {
-            Log::error('Error creating invoice: ' . $e->getMessage());
-            $this->error('Error creating invoice: ' . $e->getMessage());
+            Log::error('Error saving invoice: ' . $e->getMessage());
+            $this->error('Error saving invoice: ' . $e->getMessage());
         }
     }
+
+    // Extract existing invoice creation into this method
+    private function createNewInvoice()
+    {
+        DB::transaction(function () {
+            // Create invoice
+            $invoice = Invoice::create([
+                'invoice_number' => Invoice::generateInvoiceNumber($this->invoiceType),
+                'invoice_type' => $this->invoiceType,
+                'invoice_date' => $this->invoiceDate,
+                'due_date' => $this->dueDate,
+                'client_id' => $this->invoiceType === 'client' ? $this->clientId : null,
+                'client_name' => $this->invoiceType === 'cash' ? $this->clientName : null,
+                'client_phone' => $this->clientPhone,
+                'client_address' => $this->clientAddress,
+                'is_gst_invoice' => $this->isGstInvoice,
+                'client_gstin' => $this->clientGstin,
+                'place_of_supply' => $this->placeOfSupply,
+                'gst_type' => $this->gstType,
+                'notes' => $this->notes,
+                'terms_conditions' => $this->termsConditions,
+                'created_by' => auth()->user()->name,
+                'coolie_expense' => $this->coolieExpense ?? 0,
+                'payment_method' => $this->invoiceType === 'cash' ? $this->paymentMethod : null,
+                'bank_account_id' => $this->invoiceType === 'cash' && $this->paymentMethod === 'bank' ? $this->bankAccountId : null,
+            ]);
+
+            $subtotal = 0;
+            $totalTax = 0;
+
+            // Create invoice items and update stock
+            foreach ($this->invoiceItems as $itemData) {
+                if (empty($itemData['product_id']) || empty($itemData['quantity'])) continue;
+
+                $product = Product::find($itemData['product_id']);
+
+                // Check stock availability
+                if ($product->stock_quantity < $itemData['quantity']) {
+                    throw new \Exception("Insufficient stock for product: {$product->name}");
+                }
+
+                // Calculate amounts
+                $unitPrice = $itemData['unit_price'];
+                $quantity = $itemData['quantity'];
+                $discountPercent = $itemData['discount_percentage'] ?? 0;
+
+                $lineTotal = $unitPrice * $quantity;
+                $discountAmount = ($lineTotal * $discountPercent) / 100;
+                $taxableAmount = $lineTotal - $discountAmount;
+
+                // Calculate GST
+                $cgstAmount = ($taxableAmount * ($itemData['cgst_rate'] ?? 0)) / 100;
+                $sgstAmount = ($taxableAmount * ($itemData['sgst_rate'] ?? 0)) / 100;
+                $igstAmount = ($taxableAmount * ($itemData['igst_rate'] ?? 0)) / 100;
+                $totalItemAmount = $taxableAmount + $cgstAmount + $sgstAmount + $igstAmount;
+
+                // Create invoice item
+                InvoiceItem::create([
+                    'invoice_id' => $invoice->id,
+                    'product_id' => $product->id,
+                    'product_name' => $product->name,
+                    'product_unit' => $product->unit,
+                    'invoice_unit' => $itemData['invoice_unit'],
+                    'unit_conversion_factor' => 1,
+                    'quantity' => $quantity,
+                    'unit_price' => $unitPrice,
+                    'discount_percentage' => $discountPercent,
+                    'discount_amount' => $discountAmount,
+                    'taxable_amount' => $taxableAmount,
+                    'cgst_rate' => $itemData['cgst_rate'] ?? 0,
+                    'sgst_rate' => $itemData['sgst_rate'] ?? 0,
+                    'igst_rate' => $itemData['igst_rate'] ?? 0,
+                    'cgst_amount' => $cgstAmount,
+                    'sgst_amount' => $sgstAmount,
+                    'igst_amount' => $igstAmount,
+                    'total_amount' => $totalItemAmount,
+                ]);
+
+                // Update product stock
+                $product->stock_quantity -= $quantity;
+                $product->save();
+
+                // Create stock movement
+                StockMovement::create([
+                    'product_id' => $product->id,
+                    'type' => 'out',
+                    'quantity' => $quantity,
+                    'reason' => 'sale',
+                    'reference_type' => Invoice::class,
+                    'reference_id' => $invoice->id,
+                ]);
+
+                $subtotal += $taxableAmount;
+                $totalTax += ($cgstAmount + $sgstAmount + $igstAmount);
+            }
+
+            $totalAmount = $subtotal + $totalTax;
+            $finalAmount = $totalAmount + ($this->coolieExpense ?? 0);
+
+            // Update invoice totals
+            $invoice->update([
+                'subtotal' => $subtotal,
+                'cgst_amount' => $invoice->items->sum('cgst_amount'),
+                'sgst_amount' => $invoice->items->sum('sgst_amount'),
+                'igst_amount' => $invoice->items->sum('igst_amount'),
+                'total_tax' => $totalTax,
+                'total_amount' => $totalAmount,
+                'final_amount' => $finalAmount,
+                'balance_amount' => $finalAmount,
+            ]);
+
+            // Get cash ledger
+            $cashLedger = AccountLedger::firstOrCreate(
+                ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
+                [
+                    'opening_balance' => 0,
+                    'opening_balance_type' => 'debit',
+                    'current_balance' => 0,
+                    'is_active' => true,
+                ]
+            );
+
+            // Handle payment recording based on invoice type
+            if ($this->invoiceType === 'cash') {
+                // Cash invoice - record immediate payment
+                if ($this->paymentMethod === 'cash') {
+                    // Add full amount (including coolie) to cash ledger
+                    $cashLedger->transactions()->create([
+                        'date' => $this->invoiceDate,
+                        'type' => 'sale',
+                        'description' => "Cash sale - Invoice {$invoice->invoice_number}",
+                        'debit_amount' => $finalAmount,
+                        'credit_amount' => 0,
+                        'reference' => $invoice->invoice_number,
+                        'referenceable_type' => Invoice::class,
+                        'referenceable_id' => $invoice->id,
+                    ]);
+
+                    $cashLedger->current_balance += $finalAmount;
+                    $cashLedger->save();
+                } elseif ($this->paymentMethod === 'bank') {
+                    // Add invoice amount to bank account
+                    $bankAccount = CompanyBankAccount::find($this->bankAccountId);
+                    if ($bankAccount) {
+                        $bankAccount->recordTransaction(
+                            'credit',
+                            $finalAmount,
+                            "Invoice payment - {$invoice->invoice_number}",
+                            [
+                                'transaction_date' => $this->invoiceDate,
+                                'category' => 'sales',
+                                'reference_number' => $invoice->invoice_number,
+                                'transactionable_type' => Invoice::class,
+                                'transactionable_id' => $invoice->id,
+                            ]
+                        );
+                    }
+                }
+
+                // Mark cash invoice as paid
+                $invoice->update([
+                    'paid_amount' => $finalAmount,
+                    'balance_amount' => 0,
+                    'payment_status' => 'paid',
+                ]);
+            } elseif ($this->invoiceType === 'client') {
+                // Client invoice - create ledger entry (unpaid)
+                $client = Client::find($this->clientId);
+                if ($client) {
+                    // Ensure client has a ledger
+                    if (!$client->ledger) {
+                        $client->ledger()->create([
+                            'ledger_name' => $client->name,
+                            'ledger_type' => 'client',
+                            'opening_balance' => 0,
+                            'opening_balance_type' => 'debit',
+                            'current_balance' => 0,
+                            'is_active' => true,
+                        ]);
+                        $client->refresh();
+                    }
+
+                    // Create debit entry (client owes money)
+                    $client->ledger->transactions()->create([
+                        'date' => $this->invoiceDate,
+                        'type' => 'sale',
+                        'description' => "Sales invoice - {$invoice->invoice_number}",
+                        'debit_amount' => $finalAmount,
+                        'credit_amount' => 0,
+                        'reference' => $invoice->invoice_number,
+                        'referenceable_type' => Invoice::class,
+                        'referenceable_id' => $invoice->id,
+                    ]);
+
+                    // Update client ledger balance
+                    $client->ledger->current_balance += $finalAmount;
+                    $client->ledger->save();
+                }
+            }
+            // Record and deduct coolie expense from cash
+            if ($this->coolieExpense > 0) {
+                $this->recordCoolieExpense($invoice, $cashLedger);
+            }
+
+            $this->success('Invoice created successfully!');
+            $this->closeInvoiceModal();
+            $this->calculateStats();
+
+            // Generate PDF for client invoices
+            if ($this->invoiceType === 'client') {
+                $this->dispatch('invoice-created', ['invoiceId' => $invoice->id]);
+            }
+        });
+    }
+
+    // MAIN UPDATE METHOD - Handles ALL payment scenarios
+    private function updateInvoice()
+    {
+        DB::transaction(function () {
+            $invoice = Invoice::with(['items', 'client', 'payments'])->findOrFail($this->editingInvoice);
+
+            // Calculate amounts
+            $newFinalAmount = $this->invoiceGrandTotal + ($this->coolieExpense ?? 0);
+            $oldFinalAmount = $invoice->finalamount;
+            $paidAmount = $invoice->paidamount;
+
+            Log::info("Invoice Edit: Old={$oldFinalAmount}, New={$newFinalAmount}, Paid={$paidAmount}");
+
+            // STEP 1: Reverse all old transactions
+            $this->reverseInvoiceTransactions($invoice);
+
+            // STEP 2: Update invoice header
+            $invoice->update([
+                'invoicedate' => $this->invoiceDate,
+                'duedate' => $this->dueDate,
+                'clientid' => $this->invoiceType === 'client' ? $this->clientId : null,
+                'clientname' => $this->invoiceType === 'cash' ? $this->clientName : null,
+                'clientphone' => $this->clientPhone,
+                'clientaddress' => $this->clientAddress,
+                'isgstinvoice' => $this->isGstInvoice,
+                'clientgstin' => $this->clientGstin,
+                'placeofsupply' => $this->placeOfSupply,
+                'gsttype' => $this->gstType,
+                'notes' => $this->notes,
+                'termsconditions' => $this->termsConditions,
+                'coolieexpense' => $this->coolieExpense ?? 0,
+                'paymentmethod' => $this->invoiceType === 'cash' ? $this->invoicePaymentMethod : null,
+                'bankaccountid' => ($this->invoiceType === 'cash' && $this->invoicePaymentMethod === 'bank')
+                    ? $this->invoiceBankAccountId : null,
+            ]);
+
+            // STEP 3: Delete old items
+            $invoice->items()->delete();
+
+            // STEP 4: Create new items (same calculation logic as create)
+            $subtotal = 0;
+            $totalTax = 0;
+
+            foreach ($this->invoiceItems as $itemData) {
+                if (empty($itemData['productid']) || empty($itemData['quantity'])) continue;
+
+                $product = Product::find($itemData['productid']);
+
+                if ($product->stockquantity < $itemData['quantity']) {
+                    throw new \Exception('Insufficient stock for ' . $product->name);
+                }
+
+                $unitPrice = $itemData['unitprice'];
+                $quantity = $itemData['quantity'];
+                $discountPercent = $itemData['discountpercentage'] ?? 0;
+
+                $lineTotal = $unitPrice * $quantity;
+                $discountAmount = $lineTotal * ($discountPercent / 100);
+                $taxableAmount = $lineTotal - $discountAmount;
+
+                $cgstAmount = $taxableAmount * (($itemData['cgstrate'] ?? 0) / 100);
+                $sgstAmount = $taxableAmount * (($itemData['sgstrate'] ?? 0) / 100);
+                $igstAmount = $taxableAmount * (($itemData['igstrate'] ?? 0) / 100);
+                $totalItemAmount = $taxableAmount + $cgstAmount + $sgstAmount + $igstAmount;
+
+                InvoiceItem::create([
+                    'invoiceid' => $invoice->id,
+                    'productid' => $product->id,
+                    'productname' => $product->name,
+                    'productunit' => $product->unit,
+                    'invoiceunit' => $itemData['invoiceunit'],
+                    'unitconversionfactor' => 1,
+                    'quantity' => $quantity,
+                    'unitprice' => $unitPrice,
+                    'discountpercentage' => $discountPercent,
+                    'discountamount' => $discountAmount,
+                    'taxableamount' => $taxableAmount,
+                    'cgstrate' => $itemData['cgstrate'] ?? 0,
+                    'sgstrate' => $itemData['sgstrate'] ?? 0,
+                    'igstrate' => $itemData['igstrate'] ?? 0,
+                    'cgstamount' => $cgstAmount,
+                    'sgstamount' => $sgstAmount,
+                    'igstamount' => $igstAmount,
+                    'totalamount' => $totalItemAmount,
+                ]);
+
+                $product->stockquantity -= $quantity;
+                $product->save();
+
+                StockMovement::create([
+                    'productid' => $product->id,
+                    'type' => 'out',
+                    'quantity' => $quantity,
+                    'reason' => 'sale',
+                    'referencetype' => Invoice::class,
+                    'referenceid' => $invoice->id,
+                ]);
+
+                $subtotal += $taxableAmount;
+                $totalTax += $cgstAmount + $sgstAmount + $igstAmount;
+            }
+
+            // STEP 5: Calculate totals with CRITICAL payment logic
+            $totalAmount = $subtotal + $totalTax;
+            $finalAmount = $totalAmount + ($this->coolieExpense ?? 0);
+
+            // *** KEY: Calculate balance based on existing payments ***
+            $newBalanceAmount = $finalAmount - $paidAmount;
+
+            // Determine payment status
+            if ($paidAmount <= 0) {
+                $paymentStatus = 'unpaid';
+            } elseif ($newBalanceAmount <= 0) {
+                $paymentStatus = 'paid';
+                $newBalanceAmount = 0; // Set exactly to 0 when overpaid
+            } else {
+                $paymentStatus = 'partial';
+            }
+
+            $invoice->update([
+                'subtotal' => $subtotal,
+                'cgstamount' => $invoice->items()->sum('cgstamount'),
+                'sgstamount' => $invoice->items()->sum('sgstamount'),
+                'igstamount' => $invoice->items()->sum('igstamount'),
+                'totaltax' => $totalTax,
+                'totalamount' => $totalAmount,
+                'finalamount' => $finalAmount,
+                'balanceamount' => $newBalanceAmount,
+                'paymentstatus' => $paymentStatus,
+            ]);
+
+            // STEP 6: Recreate ledger entries
+            $this->recreateInvoiceLedgerEntries($invoice);
+
+            // STEP 7: Handle excess payment (when new amount < paid amount)
+            if ($paidAmount > $finalAmount && $invoice->invoicetype === 'client') {
+                $this->handleExcessPayment($invoice, $paidAmount - $finalAmount);
+            }
+
+            Log::info("Invoice {$invoice->invoicenumber} updated successfully");
+
+            $message = 'Invoice updated successfully!';
+            if ($paidAmount > $finalAmount) {
+                $excess = $paidAmount - $finalAmount;
+                $message .= ' Excess payment of ₹' . number_format($excess, 2) . ' kept as advance credit.';
+            }
+
+            $this->success($message);
+            $this->closeInvoiceModal();
+            $this->calculateStats();
+        });
+    }
+
+    // Handle excess payment - creates advance credit
+    private function handleExcessPayment($invoice, $excessAmount)
+    {
+        if ($excessAmount <= 0) return;
+
+        $client = Client::with('ledger')->find($invoice->clientid);
+        if (!$client || !$client->ledger) return;
+
+        // Create adjustment entry - customer has advance credit
+        $client->ledger->transactions()->create([
+            'date' => now(),
+            'type' => 'adjustment',
+            'description' => "Excess payment adjustment for invoice {$invoice->invoicenumber} edit - Customer advance credit",
+            'debitamount' => 0,
+            'creditamount' => $excessAmount,
+            'reference' => "ADJ-{$invoice->invoicenumber}",
+            'referenceabletype' => Invoice::class,
+            'referenceableid' => $invoice->id,
+        ]);
+
+        // Reduce client's outstanding
+        $client->ledger->currentbalance -= $excessAmount;
+        $client->ledger->save();
+
+        Log::info("Created advance credit of ₹{$excessAmount} for client {$client->name}");
+    }
+
+    // Reverse all old transactions
+    private function reverseInvoiceTransactions($invoice)
+    {
+        // 1. Reverse stock
+        foreach ($invoice->items as $item) {
+            $product = $item->product;
+            if ($product) {
+                $product->stockquantity += $item->quantity;
+                $product->save();
+
+                StockMovement::create([
+                    'productid' => $product->id,
+                    'type' => 'in',
+                    'quantity' => $item->quantity,
+                    'reason' => 'invoice_edit_reversal',
+                    'referencetype' => Invoice::class,
+                    'referenceid' => $invoice->id,
+                ]);
+            }
+        }
+
+        // 2. Reverse client ledger (only sale entry, not payments)
+        if ($invoice->clientid && $invoice->client && $invoice->client->ledger) {
+            $ledger = $invoice->client->ledger;
+
+            $invoiceTransactions = LedgerTransaction::where('referenceabletype', Invoice::class)
+                ->where('referenceableid', $invoice->id)
+                ->where('type', 'sale') // Only reverse sale, not payments
+                ->get();
+
+            foreach ($invoiceTransactions as $transaction) {
+                $ledger->currentbalance -= $transaction->debitamount;
+                $ledger->currentbalance += $transaction->creditamount;
+                $transaction->delete();
+            }
+
+            $ledger->save();
+        }
+
+        // 3. Reverse cash ledger
+        if ($invoice->invoicetype === 'cash') {
+            $cashLedger = AccountLedger::where('ledgertype', 'cash')
+                ->where('ledgername', 'Cash in Hand')
+                ->first();
+
+            if ($cashLedger) {
+                $cashTransactions = LedgerTransaction::where('referenceabletype', Invoice::class)
+                    ->where('referenceableid', $invoice->id)
+                    ->get();
+
+                foreach ($cashTransactions as $transaction) {
+                    $cashLedger->currentbalance -= $transaction->debitamount;
+                    $cashLedger->currentbalance += $transaction->creditamount;
+                    $transaction->delete();
+                }
+
+                $cashLedger->save();
+            }
+        }
+
+        // 4. Reverse bank transactions
+        if ($invoice->invoicetype === 'cash' && $invoice->paymentmethod === 'bank' && $invoice->bankaccountid) {
+            $bankAccount = CompanyBankAccount::find($invoice->bankaccountid);
+            if ($bankAccount) {
+                $bankTransactions = BankTransaction::where('transactionabletype', Invoice::class)
+                    ->where('transactionableid', $invoice->id)
+                    ->get();
+
+                foreach ($bankTransactions as $transaction) {
+                    if ($transaction->type === 'credit') {
+                        $bankAccount->currentbalance -= $transaction->amount;
+                    } else {
+                        $bankAccount->currentbalance += $transaction->amount;
+                    }
+                    $transaction->delete();
+                }
+
+                $bankAccount->save();
+            }
+        }
+
+        // 5. Reverse coolie expense
+        if ($invoice->coolieexpense > 0) {
+            $expense = Expense::where('referencenumber', $invoice->invoicenumber)
+                ->whereIn('expensetitle', [
+                    'Coolie Charges for invoice ' . $invoice->invoicenumber,
+                    'Delivery Charges for invoice ' . $invoice->invoicenumber
+                ])
+                ->first();
+
+            if ($expense) {
+                $cashLedger = AccountLedger::where('ledgertype', 'cash')
+                    ->where('ledgername', 'Cash in Hand')
+                    ->first();
+
+                if ($cashLedger) {
+                    $expenseTransaction = LedgerTransaction::where('referenceabletype', Expense::class)
+                        ->where('referenceableid', $expense->id)
+                        ->first();
+
+                    if ($expenseTransaction) {
+                        $cashLedger->currentbalance += $invoice->coolieexpense;
+                        $cashLedger->save();
+                        $expenseTransaction->delete();
+                    }
+                }
+
+                $expense->delete();
+            }
+        }
+    }
+
+    // Recreate ledger entries with new amounts
+    private function recreateInvoiceLedgerEntries($invoice)
+    {
+        $cashLedger = AccountLedger::firstOrCreate(
+            ['ledgertype' => 'cash', 'ledgername' => 'Cash in Hand'],
+            ['openingbalance' => 0, 'openingbalancetype' => 'debit', 'currentbalance' => 0, 'isactive' => true]
+        );
+
+        if ($invoice->invoicetype === 'cash') {
+            if ($invoice->paymentmethod === 'cash') {
+                $cashLedger->transactions()->create([
+                    'date' => $invoice->invoicedate,
+                    'type' => 'sale',
+                    'description' => 'Cash sale - Invoice ' . $invoice->invoicenumber,
+                    'debitamount' => $invoice->finalamount,
+                    'creditamount' => 0,
+                    'reference' => $invoice->invoicenumber,
+                    'referenceabletype' => Invoice::class,
+                    'referenceableid' => $invoice->id,
+                ]);
+
+                $cashLedger->currentbalance += $invoice->finalamount;
+                $cashLedger->save();
+            } elseif ($invoice->paymentmethod === 'bank' && $invoice->bankaccountid) {
+                $bankAccount = CompanyBankAccount::find($invoice->bankaccountid);
+                if ($bankAccount) {
+                    $bankAccount->recordTransaction(
+                        'credit',
+                        $invoice->finalamount,
+                        'Invoice payment - ' . $invoice->invoicenumber,
+                        transactiondate: $invoice->invoicedate,
+                        category: 'sales',
+                        referencenumber: $invoice->invoicenumber,
+                        transactionabletype: Invoice::class,
+                        transactionableid: $invoice->id
+                    );
+                }
+            }
+        } elseif ($invoice->invoicetype === 'client' && $invoice->clientid) {
+            $client = Client::find($invoice->clientid);
+
+            if ($client) {
+                if (!$client->ledger) {
+                    $client->ledger()->create([
+                        'ledgername' => $client->name,
+                        'ledgertype' => 'client',
+                        'openingbalance' => 0,
+                        'openingbalancetype' => 'debit',
+                        'currentbalance' => 0,
+                        'isactive' => true,
+                    ]);
+                    $client->refresh();
+                }
+
+                $client->ledger->transactions()->create([
+                    'date' => $invoice->invoicedate,
+                    'type' => 'sale',
+                    'description' => 'Sales invoice - ' . $invoice->invoicenumber . ' (Updated)',
+                    'debitamount' => $invoice->finalamount,
+                    'creditamount' => 0,
+                    'reference' => $invoice->invoicenumber,
+                    'referenceabletype' => Invoice::class,
+                    'referenceableid' => $invoice->id,
+                ]);
+
+                $client->ledger->currentbalance += $invoice->finalamount;
+                $client->ledger->save();
+            }
+        }
+
+        if ($invoice->coolieexpense > 0) {
+            $this->recordCoolieExpense($invoice, $cashLedger);
+        }
+    }
+
+
+    // before editing saveInvoice
+    // public function saveInvoice()
+    // {
+    //     $this->validate();
+
+    //     // Additional validation
+    //     if (empty($this->invoiceItems) || !$this->invoiceItems[0]['product_id']) {
+    //         $this->error('At least one product is required');
+    //         return;
+    //     }
+
+    //     try {
+    //         DB::transaction(function () {
+    //             // Create invoice
+    //             $invoice = Invoice::create([
+    //                 'invoice_number' => Invoice::generateInvoiceNumber($this->invoiceType),
+    //                 'invoice_type' => $this->invoiceType,
+    //                 'invoice_date' => $this->invoiceDate,
+    //                 'due_date' => $this->dueDate,
+    //                 'client_id' => $this->invoiceType === 'client' ? $this->clientId : null,
+    //                 'client_name' => $this->invoiceType === 'cash' ? $this->clientName : null,
+    //                 'client_phone' => $this->clientPhone,
+    //                 'client_address' => $this->clientAddress,
+    //                 'is_gst_invoice' => $this->isGstInvoice,
+    //                 'client_gstin' => $this->clientGstin,
+    //                 'place_of_supply' => $this->placeOfSupply,
+    //                 'gst_type' => $this->gstType,
+    //                 'notes' => $this->notes,
+    //                 'terms_conditions' => $this->termsConditions,
+    //                 'created_by' => auth()->user()->name,
+    //                 'coolie_expense' => $this->coolieExpense ?? 0,
+    //                 'payment_method' => $this->invoiceType === 'cash' ? $this->paymentMethod : null,
+    //                 'bank_account_id' => $this->invoiceType === 'cash' && $this->paymentMethod === 'bank' ? $this->bankAccountId : null,
+    //             ]);
+
+    //             $subtotal = 0;
+    //             $totalTax = 0;
+
+    //             // Create invoice items and update stock
+    //             foreach ($this->invoiceItems as $itemData) {
+    //                 if (empty($itemData['product_id']) || empty($itemData['quantity'])) continue;
+
+    //                 $product = Product::find($itemData['product_id']);
+
+    //                 // Check stock availability
+    //                 if ($product->stock_quantity < $itemData['quantity']) {
+    //                     throw new \Exception("Insufficient stock for product: {$product->name}");
+    //                 }
+
+    //                 // Calculate amounts
+    //                 $unitPrice = $itemData['unit_price'];
+    //                 $quantity = $itemData['quantity'];
+    //                 $discountPercent = $itemData['discount_percentage'] ?? 0;
+
+    //                 $lineTotal = $unitPrice * $quantity;
+    //                 $discountAmount = ($lineTotal * $discountPercent) / 100;
+    //                 $taxableAmount = $lineTotal - $discountAmount;
+
+    //                 // Calculate GST
+    //                 $cgstAmount = ($taxableAmount * ($itemData['cgst_rate'] ?? 0)) / 100;
+    //                 $sgstAmount = ($taxableAmount * ($itemData['sgst_rate'] ?? 0)) / 100;
+    //                 $igstAmount = ($taxableAmount * ($itemData['igst_rate'] ?? 0)) / 100;
+    //                 $totalItemAmount = $taxableAmount + $cgstAmount + $sgstAmount + $igstAmount;
+
+    //                 // Create invoice item
+    //                 InvoiceItem::create([
+    //                     'invoice_id' => $invoice->id,
+    //                     'product_id' => $product->id,
+    //                     'product_name' => $product->name,
+    //                     'product_unit' => $product->unit,
+    //                     'invoice_unit' => $itemData['invoice_unit'],
+    //                     'unit_conversion_factor' => 1,
+    //                     'quantity' => $quantity,
+    //                     'unit_price' => $unitPrice,
+    //                     'discount_percentage' => $discountPercent,
+    //                     'discount_amount' => $discountAmount,
+    //                     'taxable_amount' => $taxableAmount,
+    //                     'cgst_rate' => $itemData['cgst_rate'] ?? 0,
+    //                     'sgst_rate' => $itemData['sgst_rate'] ?? 0,
+    //                     'igst_rate' => $itemData['igst_rate'] ?? 0,
+    //                     'cgst_amount' => $cgstAmount,
+    //                     'sgst_amount' => $sgstAmount,
+    //                     'igst_amount' => $igstAmount,
+    //                     'total_amount' => $totalItemAmount,
+    //                 ]);
+
+    //                 // Update product stock
+    //                 $product->stock_quantity -= $quantity;
+    //                 $product->save();
+
+    //                 // Create stock movement
+    //                 StockMovement::create([
+    //                     'product_id' => $product->id,
+    //                     'type' => 'out',
+    //                     'quantity' => $quantity,
+    //                     'reason' => 'sale',
+    //                     'reference_type' => Invoice::class,
+    //                     'reference_id' => $invoice->id,
+    //                 ]);
+
+    //                 $subtotal += $taxableAmount;
+    //                 $totalTax += ($cgstAmount + $sgstAmount + $igstAmount);
+    //             }
+
+    //             $totalAmount = $subtotal + $totalTax;
+    //             $finalAmount = $totalAmount + ($this->coolieExpense ?? 0);
+
+    //             // Update invoice totals
+    //             $invoice->update([
+    //                 'subtotal' => $subtotal,
+    //                 'cgst_amount' => $invoice->items->sum('cgst_amount'),
+    //                 'sgst_amount' => $invoice->items->sum('sgst_amount'),
+    //                 'igst_amount' => $invoice->items->sum('igst_amount'),
+    //                 'total_tax' => $totalTax,
+    //                 'total_amount' => $totalAmount,
+    //                 'final_amount' => $finalAmount,
+    //                 'balance_amount' => $finalAmount,
+    //             ]);
+
+    //             // Get cash ledger
+    //             $cashLedger = AccountLedger::firstOrCreate(
+    //                 ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
+    //                 [
+    //                     'opening_balance' => 0,
+    //                     'opening_balance_type' => 'debit',
+    //                     'current_balance' => 0,
+    //                     'is_active' => true,
+    //                 ]
+    //             );
+
+    //             // Handle payment recording based on invoice type
+    //             if ($this->invoiceType === 'cash') {
+    //                 // Cash invoice - record immediate payment
+    //                 if ($this->paymentMethod === 'cash') {
+    //                     // Add full amount (including coolie) to cash ledger
+    //                     $cashLedger->transactions()->create([
+    //                         'date' => $this->invoiceDate,
+    //                         'type' => 'sale',
+    //                         'description' => "Cash sale - Invoice {$invoice->invoice_number}",
+    //                         'debit_amount' => $finalAmount,
+    //                         'credit_amount' => 0,
+    //                         'reference' => $invoice->invoice_number,
+    //                         'referenceable_type' => Invoice::class,
+    //                         'referenceable_id' => $invoice->id,
+    //                     ]);
+
+    //                     $cashLedger->current_balance += $finalAmount;
+    //                     $cashLedger->save();
+    //                 } elseif ($this->paymentMethod === 'bank') {
+    //                     // Add invoice amount to bank account
+    //                     $bankAccount = CompanyBankAccount::find($this->bankAccountId);
+    //                     if ($bankAccount) {
+    //                         $bankAccount->recordTransaction(
+    //                             'credit',
+    //                             $finalAmount,
+    //                             "Invoice payment - {$invoice->invoice_number}",
+    //                             [
+    //                                 'transaction_date' => $this->invoiceDate,
+    //                                 'category' => 'sales',
+    //                                 'reference_number' => $invoice->invoice_number,
+    //                                 'transactionable_type' => Invoice::class,
+    //                                 'transactionable_id' => $invoice->id,
+    //                             ]
+    //                         );
+    //                     }
+    //                 }
+
+    //                 // Mark cash invoice as paid
+    //                 $invoice->update([
+    //                     'paid_amount' => $finalAmount,
+    //                     'balance_amount' => 0,
+    //                     'payment_status' => 'paid',
+    //                 ]);
+    //             } elseif ($this->invoiceType === 'client') {
+    //                 // Client invoice - create ledger entry (unpaid)
+    //                 $client = Client::find($this->clientId);
+    //                 if ($client) {
+    //                     // Ensure client has a ledger
+    //                     if (!$client->ledger) {
+    //                         $client->ledger()->create([
+    //                             'ledger_name' => $client->name,
+    //                             'ledger_type' => 'client',
+    //                             'opening_balance' => 0,
+    //                             'opening_balance_type' => 'debit',
+    //                             'current_balance' => 0,
+    //                             'is_active' => true,
+    //                         ]);
+    //                         $client->refresh();
+    //                     }
+
+    //                     // Create debit entry (client owes money)
+    //                     $client->ledger->transactions()->create([
+    //                         'date' => $this->invoiceDate,
+    //                         'type' => 'sale',
+    //                         'description' => "Sales invoice - {$invoice->invoice_number}",
+    //                         'debit_amount' => $finalAmount,
+    //                         'credit_amount' => 0,
+    //                         'reference' => $invoice->invoice_number,
+    //                         'referenceable_type' => Invoice::class,
+    //                         'referenceable_id' => $invoice->id,
+    //                     ]);
+
+    //                     // Update client ledger balance
+    //                     $client->ledger->current_balance += $finalAmount;
+    //                     $client->ledger->save();
+    //                 }
+    //             }
+    //             // Record and deduct coolie expense from cash
+    //             if ($this->coolieExpense > 0) {
+    //                 $this->recordCoolieExpense($invoice, $cashLedger);
+    //             }
+
+    //             $this->success('Invoice created successfully!');
+    //             $this->closeInvoiceModal();
+    //             $this->calculateStats();
+
+    //             // Generate PDF for client invoices
+    //             if ($this->invoiceType === 'client') {
+    //                 $this->dispatch('invoice-created', ['invoiceId' => $invoice->id]);
+    //             }
+    //         });
+    //     } catch (\Exception $e) {
+    //         Log::error('Error creating invoice: ' . $e->getMessage());
+    //         $this->error('Error creating invoice: ' . $e->getMessage());
+    //     }
+    // }
 
     // Helper method to record coolie expense
     private function recordCoolieExpense(Invoice $invoice, AccountLedger $cashLedger): void

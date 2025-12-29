@@ -279,6 +279,14 @@
                 @click="$wire.viewInvoice({{ $invoice->id }})" />
 
             <x-mary-button
+                icon="o-pencil"
+                class="btn-circle btn-ghost btn-xs text-warning"
+                tooltip="Edit Invoice"
+                wire:click="editInvoice({{ $invoice->id }})"
+                :disabled="$invoice->is_cancelled" />
+
+
+            <x-mary-button
                 icon="o-arrow-down-tray"
                 class="btn-circle btn-ghost btn-xs text-primary"
                 tooltip="Download PDF"
@@ -320,9 +328,8 @@
 @endif
 
 {{-- Invoice Modal --}}
-<x-mary-modal
-    wire:model="showInvoiceModal"
-    title="Create {{ ucfirst($invoiceType) }} Invoice"
+<x-mary-modal wire:model="showInvoiceModal"
+    :title="$editingInvoice ? 'Edit ' . ucfirst($invoiceType) . ' Invoice' : 'Create ' . ucfirst($invoiceType) . ' Invoice'"
     box-class="backdrop-blur max-w-6xl max-h-[90vh] overflow-y-auto">
 
     <div class="space-y-6">
@@ -924,7 +931,7 @@
             class="btn-primary"
             icon="o-arrow-down-tray"
             @click="$wire.downloadInvoicePdf({{ $viewingInvoice->id }})" />
-       {{-- <x-mary-button
+        {{-- <x-mary-button
             label="Duplicate"
             class="btn-secondary"
             icon="o-document-duplicate"
