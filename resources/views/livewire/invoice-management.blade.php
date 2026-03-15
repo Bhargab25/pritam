@@ -388,10 +388,13 @@
             <select wire:model.live="invoicePaymentMethod" class="select select-bordered w-full" required>
                 <option value="cash">💵 Cash</option>
                 <option value="bank">🏦 Bank Transfer</option>
+                <option value="upi">📱 UPI</option>
+                <option value="card">💳 Card</option>
+                <option value="cheque">📝 Cheque</option>
             </select>
 
             {{-- Bank Account --}}
-            @if($invoicePaymentMethod === 'bank')
+            @if($invoicePaymentMethod !== 'cash')
             <select wire:model="invoiceBankAccountId" class="select select-bordered w-full" required>
                 <option value="">Select bank account</option>
                 @foreach($bankAccounts as $account)
@@ -972,19 +975,32 @@
 
             <x-mary-select
                 label="Payment Method *"
-                wire:model="paymentMethod"
+                wire:model.live="paymentMethod"
                 :options="[
-                        ['value' => 'cash', 'label' => 'Cash'],
-                        ['value' => 'bank', 'label' => 'Bank Transfer'],
-                        ['value' => 'upi', 'label' => 'UPI'],
-                        ['value' => 'card', 'label' => 'Card'],
-                        ['value' => 'cheque', 'label' => 'Cheque']
+                        ['value' => 'cash', 'label' => '💵 Cash'],
+                        ['value' => 'bank', 'label' => '🏦 Bank Transfer'],
+                        ['value' => 'upi', 'label' => '📱 UPI'],
+                        ['value' => 'card', 'label' => '💳 Card'],
+                        ['value' => 'cheque', 'label' => '📝 Cheque']
                     ]"
                 option-value="value"
                 option-label="label"
                 :error="$errors->first('paymentMethod')"
                 required />
         </div>
+
+        @if($paymentMethod !== 'cash')
+        <div class="grid grid-cols-1 gap-4">
+            <select wire:model="paymentBankAccountId" class="select select-bordered w-full mb-2" required>
+                <option value="">Select bank account *</option>
+                @foreach($bankAccounts as $account)
+                <option value="{{ $account->id }}">
+                    {{ $account->bank_name }} - {{ $account->account_number }}
+                </option>
+                @endforeach
+            </select>
+        </div>
+        @endif
 
         <x-mary-input
             label="Reference Number"

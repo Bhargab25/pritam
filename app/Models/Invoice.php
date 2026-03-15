@@ -153,6 +153,7 @@ class Invoice extends Model
             $prefix = 'INV-' . $year . '-';
 
             // Find last invoice for this year (including soft-deleted)
+            /** @var \App\Models\Invoice|null $lastInvoice */
             $lastInvoice = static::withTrashed()
                 ->where('invoice_number', 'like', $prefix . '%')
                 ->orderBy('invoice_number', 'desc')
@@ -197,31 +198,106 @@ class Invoice extends Model
                     // ========================================
                     // 2. HANDLE LEDGER TRANSACTION REVERSAL
                     // ========================================
-                    $client = $invoice->client;
+                    
+                    // A. Reverse Ledger Transactions directly linked to the Invoice
+                    $invoiceLedgerTransactions = LedgerTransaction::where('referenceable_type', Invoice::class)
+                        ->where('referenceable_id', $invoice->id)
+                        ->get();
 
-                    if ($client && $client->ledger) {
-                        $ledger = $client->ledger;
-
-                        // Find all ledger transactions related to this invoice
-                        $invoiceTransactions = LedgerTransaction::where('referenceable_type', Invoice::class)
-                            ->where('referenceable_id', $invoice->id)
-                            ->get();
-
-                        foreach ($invoiceTransactions as $transaction) {
-                            // Reverse the transaction effect on ledger balance
-                            $ledger->current_balance -= ($transaction->debit_amount - $transaction->credit_amount);
-
-                            // Soft delete the transaction
-                            $transaction->delete();
-                        }
-
-                        $ledger->save();
-
-                        Log::info("Ledger transactions reversed for invoice {$invoice->invoice_number}");
+                    foreach ($invoiceLedgerTransactions as $transaction) {
+                        $transaction->ledger->transactions()->create([
+                            'date' => now(),
+                            'type' => 'adjustment',
+                            'description' => "Reversal of: " . $transaction->description,
+                            'debit_amount' => $transaction->credit_amount,
+                            'credit_amount' => $transaction->debit_amount,
+                            'reference' => "REV-" . ($transaction->reference ?? $invoice->invoice_number),
+                            'referenceable_type' => Invoice::class,
+                            'referenceable_id' => $invoice->id,
+                        ]);
                     }
 
+                    // B. Reverse Bank Transactions directly linked to the Invoice
+                    $invoiceBankTransactions = BankTransaction::where('transactionable_type', Invoice::class)
+                        ->where('transactionable_id', $invoice->id)
+                        ->get();
+
+                    foreach ($invoiceBankTransactions as $bankTx) {
+                        $bankTx->bankAccount->recordTransaction(
+                            $bankTx->type === 'credit' ? 'debit' : 'credit',
+                            $bankTx->amount,
+                            "Reversal of: " . $bankTx->description,
+                            [
+                                'transaction_date' => now(),
+                                'category' => 'reversal',
+                                'reference_number' => "REV-" . ($bankTx->reference_number ?? $invoice->invoice_number),
+                                'transactionable_type' => Invoice::class,
+                                'transactionable_id' => $invoice->id,
+                            ]
+                        );
+                    }
+
+                    Log::info("Invoice transactions reversed for invoice {$invoice->invoice_number}");
+
+                    // C. Reverse any associated Invoice Payments
+                    foreach ($invoice->payments as $payment) {
+                        // Reverse Ledger Transactions for this payment
+                        $paymentLedgerTransactions = LedgerTransaction::where(function($q) use ($payment) {
+                                $q->where('referenceable_type', InvoicePayment::class)
+                                  ->where('referenceable_id', $payment->id);
+                            })->orWhere('reference', 'PAY-' . $payment->id)->get();
+
+                        $processedLedgerTxIds = [];
+
+                        foreach ($paymentLedgerTransactions as $transaction) {
+                            if (in_array($transaction->id, $processedLedgerTxIds)) continue;
+                            $processedLedgerTxIds[] = $transaction->id;
+
+                            $transaction->ledger->transactions()->create([
+                                'date' => now(),
+                                'type' => 'adjustment',
+                                'description' => "Reversal of payment: " . $transaction->description,
+                                'debit_amount' => $transaction->credit_amount,
+                                'credit_amount' => $transaction->debit_amount,
+                                'reference' => "REV-" . ($transaction->reference ?? 'PAY-' . $payment->id),
+                                'referenceable_type' => InvoicePayment::class,
+                                'referenceable_id' => $payment->id,
+                            ]);
+                        }
+
+                        // Reverse Bank Transactions for this payment
+                        $paymentBankTransactions = BankTransaction::where(function($q) use ($payment) {
+                                $q->where('transactionable_type', InvoicePayment::class)
+                                  ->where('transactionable_id', $payment->id);
+                            })->orWhere('reference_number', 'PAY-' . $payment->id)->get();
+                            
+                        $processedBankTxIds = [];
+                        
+                        foreach ($paymentBankTransactions as $bankTx) {
+                            if (in_array($bankTx->id, $processedBankTxIds)) continue;
+                            $processedBankTxIds[] = $bankTx->id;
+
+                            $bankTx->bankAccount->recordTransaction(
+                                $bankTx->type === 'credit' ? 'debit' : 'credit',
+                                $bankTx->amount,
+                                "Reversal of payment: " . $bankTx->description,
+                                [
+                                    'transaction_date' => now(),
+                                    'category' => 'reversal',
+                                    'reference_number' => "REV-" . ($bankTx->reference_number ?? 'PAY-' . $payment->id),
+                                    'transactionable_type' => InvoicePayment::class,
+                                    'transactionable_id' => $payment->id,
+                                ]
+                            );
+                        }
+
+                        // Delete payment record
+                        $payment->delete();
+                    }
+                    Log::info("Payment transactions reversed for invoice {$invoice->invoice_number}");
+
                     // ========================================
-                    // 3. DELETE COOLIE/DELIVERY EXPENSE ENTRY (✅ NEW)
+                    // 3. REVERSE COOLIE/DELIVERY EXPENSE ENTRY (✅ UPDATED)
                     // ========================================
                     if ($invoice->coolie_expense > 0) {
                         // Find the expense entry created for this invoice
@@ -239,20 +315,25 @@ class Invoice extends Model
                                 ->first();
 
                             if ($cashLedger) {
-                                // Find and delete the expense's ledger transaction
+                                // Find the expense's ledger transaction
                                 $expenseTransaction = LedgerTransaction::where('referenceable_type', Expense::class)
                                     ->where('referenceable_id', $expense->id)
                                     ->first();
 
                                 if ($expenseTransaction) {
-                                    // Reverse the cash deduction (add money back)
-                                    $cashLedger->current_balance += $invoice->coolie_expense;
-                                    $cashLedger->save();
+                                    // Reverse the cash deduction by creating a new debit transaction
+                                    $cashLedger->transactions()->create([
+                                        'date' => now(),
+                                        'type' => 'adjustment',
+                                        'description' => "Reversal of: " . $expenseTransaction->description,
+                                        'debit_amount' => $expenseTransaction->credit_amount,
+                                        'credit_amount' => $expenseTransaction->debit_amount,
+                                        'reference' => "REV-" . ($expenseTransaction->reference ?? 'EXP-' . $expense->id),
+                                        'referenceable_type' => Expense::class,
+                                        'referenceable_id' => $expense->id,
+                                    ]);
 
-                                    // Delete the transaction
-                                    $expenseTransaction->delete();
-
-                                    Log::info("Expense ledger transaction reversed for invoice {$invoice->invoice_number}");
+                                    Log::info("Expense ledger transaction reversing entry created for invoice {$invoice->invoice_number}");
                                 }
                             }
 
@@ -309,29 +390,8 @@ class Invoice extends Model
                     // ========================================
                     // 2. RESTORE LEDGER TRANSACTIONS
                     // ========================================
-                    $client = $invoice->client;
-
-                    if ($client && $client->ledger) {
-                        $ledger = $client->ledger;
-
-                        // Restore soft-deleted ledger transactions
-                        $invoiceTransactions = LedgerTransaction::withTrashed()
-                            ->where('referenceable_type', Invoice::class)
-                            ->where('referenceable_id', $invoice->id)
-                            ->get();
-
-                        foreach ($invoiceTransactions as $transaction) {
-                            // Restore the transaction
-                            $transaction->restore();
-
-                            // Re-apply effect on ledger balance
-                            $ledger->current_balance += ($transaction->debit_amount - $transaction->credit_amount);
-                        }
-
-                        $ledger->save();
-
-                        Log::info("Ledger transactions restored for invoice {$invoice->invoice_number}");
-                    }
+                    
+                    Log::info("Invoice {$invoice->invoice_number} restored. Note: previously created reversal ledger entries were kept. It is recommended to duplicate the invoice instead of restoring.");
 
                     // ========================================
                     // 3. RESTORE COOLIE/DELIVERY EXPENSE (✅ NEW)
@@ -349,30 +409,6 @@ class Invoice extends Model
                         if ($expense) {
                             // Restore the expense
                             $expense->restore();
-
-                            // Find cash ledger
-                            $cashLedger = AccountLedger::where('ledger_type', 'cash')
-                                ->where('ledger_name', 'Cash in Hand')
-                                ->first();
-
-                            if ($cashLedger) {
-                                // Find and restore the expense's ledger transaction
-                                $expenseTransaction = LedgerTransaction::withTrashed()
-                                    ->where('referenceable_type', Expense::class)
-                                    ->where('referenceable_id', $expense->id)
-                                    ->first();
-
-                                if ($expenseTransaction) {
-                                    // Restore transaction
-                                    $expenseTransaction->restore();
-
-                                    // Re-deduct from cash
-                                    $cashLedger->current_balance -= $invoice->coolie_expense;
-                                    $cashLedger->save();
-
-                                    Log::info("Expense ledger transaction restored for invoice {$invoice->invoice_number}");
-                                }
-                            }
 
                             Log::info("Expense entry restored for invoice {$invoice->invoice_number}");
                         }

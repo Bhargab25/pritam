@@ -27,11 +27,11 @@
                 class="px-5 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 {{ $activeTab === 'reports' ? 'bg-primary text-white shadow-lg' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-200' }}">
                 Reports
             </button>
-            <!-- <button
-                wire:click="switchTab('low_stock')"
-                class="px-5 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 {{ $activeTab === 'low_stock' ? 'bg-primary text-white shadow-lg' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-200' }}">
-                Low Stock
-            </button> -->
+            <button
+                wire:click="switchTab('purchases')"
+                class="px-5 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 {{ $activeTab === 'purchases' ? 'bg-primary text-white shadow-lg' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-200' }}">
+                Purchases History
+            </button>
         </div>
     </div>
     {{-- Persistent Tab Content Containers --}}
@@ -359,9 +359,66 @@
         </div>
 
 
-        {{-- Transaction Tab - Always present, controlled by CSS --}}
-        <div wire:key="supplier-transaction-tab" class="space-y-6 {{ $activeTab === 'low_stock' ? '' : 'hidden' }}">
+        {{-- Purchases Tab (Challan History) --}}
+        <div wire:key="inventory-purchases-tab" class="space-y-6 {{ $activeTab === 'purchases' ? '' : 'hidden' }}">
+            <x-mary-card class="bg-base-200">
+                <x-mary-header title="Purchase History" subtitle="List of stock purchases via Challan">
+                    <x-slot:actions>
+                        <x-mary-button icon="o-plus" label="Add Stock" class="btn-primary" @click="$wire.openAddStockModal" />
+                    </x-slot:actions>
+                </x-mary-header>
 
+                <div class="overflow-x-auto">
+                    <table class="table table-striped w-full">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Challan No</th>
+                                <th>Supplier</th>
+                                <th>Items</th>
+                                <th>Total Quantity</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @forelse($challans as $challan)
+                            <tr>
+                                <td class="whitespace-nowrap">{{ $challan->challan_date->format('d/m/Y') }}</td>
+                                <td class="font-medium font-mono">{{ $challan->challan_number }}</td>
+                                <td>{{ $challan->supplier->name ?? 'None' }}</td>
+                                <td>{{ $challan->items->count() }}</td>
+                                <td class="font-mono">{{ number_format($challan->items->sum('quantity'), 2) }}</td>
+                                <td>
+                                    <div class="flex items-center gap-2">
+                                        <x-mary-button
+                                            icon="o-pencil"
+                                            class="btn-circle btn-ghost btn-info btn-sm"
+                                            wire:click="editChallan({{ $challan->id }})"
+                                            tooltip="Edit Purchase"
+                                        />
+                                        <x-mary-button
+                                            icon="o-trash"
+                                            class="btn-circle btn-ghost btn-error btn-sm"
+                                            wire:click="deleteChallan({{ $challan->id }})"
+                                            wire:confirm="Are you sure you want to delete this purchase? This will reverse the stock addition and ledger impacts."
+                                            tooltip="Delete Purchase"
+                                        />
+                                    </div>
+                                </td>
+                            </tr>
+                            @empty
+                            <tr>
+                                <td colspan="6" class="text-center py-4 text-gray-500">No purchase history found.</td>
+                            </tr>
+                            @endforelse
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div class="mt-4">
+                    {{ $challans->links() }}
+                </div>
+            </x-mary-card>
         </div>
     </div>
 

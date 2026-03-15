@@ -426,6 +426,7 @@
                                     <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Debit</th>
                                     <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Credit</th>
                                     <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Balance</th>
+                                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                                 </tr>
                             </thead>
                             <tbody class="bg-white divide-y divide-gray-200">
@@ -463,10 +464,23 @@
                                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-mono font-bold">
                                         ₹{{ number_format(abs($runningBalance), 2) }} {{ $runningBalance >= 0 ? 'Dr' : 'Cr' }}
                                     </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                        <x-mary-button 
+                                            icon="o-pencil" 
+                                            class="btn-circle btn-ghost btn-xs btn-info mr-1" 
+                                            wire:click="editTransaction({{ $transaction->id }})" 
+                                            tooltip="Edit Transaction" />
+                                        <x-mary-button 
+                                            icon="o-trash" 
+                                            class="btn-circle btn-ghost btn-xs btn-error" 
+                                            wire:click="deleteTransaction({{ $transaction->id }})" 
+                                            wire:confirm="Are you sure you want to delete this transaction? This will reverse the ledger impact." 
+                                            tooltip="Delete/Reverse Transaction" />
+                                    </td>
                                 </tr>
                                 @empty
                                 <tr>
-                                    <td colspan="6" class="px-6 py-4 text-center text-sm text-gray-500">
+                                    <td colspan="7" class="px-6 py-4 text-center text-sm text-gray-500">
                                         No transactions found for selected filter.
                                     </td>
                                 </tr>
@@ -487,7 +501,9 @@
             <div wire:key="supplier-transaction-tab"
                 class="space-y-6 {{ $activeTab === 'transaction' ? '' : 'hidden' }}">
 
-                <h3 class="text-lg font-semibold mb-4">Add New Transaction</h3>
+                <h3 class="text-lg font-semibold mb-4">
+                    {{ isset($newTransaction['is_edit']) && $newTransaction['is_edit'] ? 'Edit Transaction' : 'Add New Transaction' }}
+                </h3>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <x-mary-input

@@ -279,19 +279,35 @@
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <x-mary-select label="Payment Method *" wire:model="paymentMethod"
+                <x-mary-select label="Payment Method *" wire:model.live="paymentMethod"
                     :options="[
-                        ['value' => 'cash', 'label' => 'Cash'],
-                        ['value' => 'bank', 'label' => 'Bank Transfer'],
-                        ['value' => 'upi', 'label' => 'UPI'],
-                        ['value' => 'card', 'label' => 'Card'],
-                        ['value' => 'cheque', 'label' => 'Cheque']
+                        ['value' => 'cash', 'label' => '💵 Cash'],
+                        ['value' => 'bank', 'label' => '🏦 Bank Transfer'],
+                        ['value' => 'upi', 'label' => '📱 UPI'],
+                        ['value' => 'card', 'label' => '💳 Card'],
+                        ['value' => 'cheque', 'label' => '📝 Cheque']
                     ]" option-value="value" option-label="label"
                     :error="$errors->first('paymentMethod')" />
 
-                <x-mary-input label="Reference Number" wire:model="referenceNumber"
-                    placeholder="Transaction ID / Cheque No." />
+                @if($paymentMethod !== 'cash')
+                <div class="w-full">
+                    <label class="label"><span class="label-text">Bank Account *</span></label>
+                    <select wire:model="bankAccountId" class="select select-bordered w-full" required>
+                        <option value="">Select bank account</option>
+                        @foreach($bankAccounts as $account)
+                        <option value="{{ $account->id }}">
+                            {{ $account->bank_name }} - {{ $account->account_number }}
+                        </option>
+                        @endforeach
+                    </select>
+                </div>
+                @else
+                <div class="hidden md:block"></div>
+                @endif
             </div>
+
+            <x-mary-input label="Reference Number" wire:model="referenceNumber"
+                placeholder="Transaction ID / Cheque No." />
 
             <x-mary-textarea label="Description" wire:model="description"
                 placeholder="Enter expense description..." rows="3" />

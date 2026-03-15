@@ -9,6 +9,7 @@ use Mary\Traits\Toast;
 use App\Models\AccountLedger;
 use App\Models\CompanyBankAccount;
 use App\Models\LedgerTransaction;
+use App\Models\BankTransaction;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
@@ -457,6 +458,16 @@ class SupplierManagement extends Component
                             break;
                     }
 
+                    // If Edit, first reverse the old transaction
+                    if (isset($this->newTransaction['is_edit']) && $this->newTransaction['is_edit']) {
+                        $oldTransaction = LedgerTransaction::find($this->newTransaction['id']);
+                        if ($oldTransaction) {
+                            $this->reverseManualTransaction($oldTransaction);
+                            // Set referenceable_type to something indicating it was edited if needed, 
+                            // or keep it null as before.
+                        }
+                    }
+
                     // Create ledger transaction
                     $ledgerTransaction = $ledger->transactions()->create([
                         'date' => $this->newTransaction['date'],
@@ -555,11 +566,12 @@ class SupplierManagement extends Component
                     'reference' => '',
                     'payment_method' => 'cash',
                     'bank_account_id' => null,
+                    'is_edit' => false
                 ];
 
                 // Refresh data
                 $this->selectedSupplier = Supplier::with(['ledger.transactions'])->find($this->selectedSupplier->id);
-                $this->success('Transaction added successfully!');
+                $this->success('Transaction saved successfully!');
             } catch (\Exception $e) {
                 Log::error('Error adding supplier transaction: ' . $e->getMessage());
                 $this->error('Error adding transaction: ' . $e->getMessage());
@@ -604,6 +616,143 @@ class SupplierManagement extends Component
     {
         $this->showConfirmDeleteModal = false;
         $this->confirmingDeleteId = null;
+    }
+
+    public function editTransaction($transactionId)
+    {
+        $transaction = LedgerTransaction::find($transactionId);
+        
+        if (!$transaction) return;
+
+        // Don't allow editing Challan-linked transactions here directly to prevent stock desync.
+        if ($transaction->referenceable_type === \App\Models\Challan::class) {
+            $this->error('Cannot Edit Purchase', 'Purchases (Challans) cannot be edited directly from the ledger. Please delete the purchase and recreate it, or use manual adjustments.');
+            return;
+        }
+
+        // We only support editing basic manual transactions via this simple form
+        $this->newTransaction = [
+            'id' => $transaction->id,
+            'date' => $transaction->date->format('Y-m-d'),
+            'type' => $transaction->type,
+            'description' => $transaction->description,
+            'amount' => $transaction->debit_amount > 0 ? $transaction->debit_amount : $transaction->credit_amount,
+            'reference' => $transaction->reference,
+            'payment_method' => 'cash', // Default fallback
+            'bank_account_id' => null,
+            'is_edit' => true
+        ];
+
+        // Determine if it was a bank transaction
+        $bankTx = BankTransaction::where('transactionable_type', LedgerTransaction::class)
+            ->where('transactionable_id', $transaction->id)
+            ->first();
+
+        if ($bankTx) {
+            $this->newTransaction['payment_method'] = 'bank';
+            $this->newTransaction['bank_account_id'] = $bankTx->company_bank_account_id;
+        }
+
+        $this->activeTab = 'transaction';
+    }
+
+    public function deleteTransaction($transactionId)
+    {
+        try {
+            DB::transaction(function () use ($transactionId) {
+                $transaction = LedgerTransaction::findOrFail($transactionId);
+
+                // Check if this transaction is linked to a Challan
+                if ($transaction->referenceable_type === \App\Models\Challan::class) {
+                    $challan = \App\Models\Challan::find($transaction->referenceable_id);
+                    if ($challan) {
+                        // Deleting the challan will trigger its booted() deleting event
+                        // which reverses stock and creates reversing ledger entries
+                        $challan->delete();
+                        Log::info("Deleted Challan {$challan->challan_number} via Supplier Transaction UI.");
+                    } else {
+                        // Reference is broken, just create reversing entry
+                        $this->reverseManualTransaction($transaction);
+                    }
+                } else {
+                    // It's a manual transaction (payment, adjustment, manual purchase)
+                    $this->reverseManualTransaction($transaction);
+                }
+            });
+
+            $this->success('Transaction Deleted', 'The transaction has been successfully reversed/deleted.');
+            
+            if ($this->selectedSupplier) {
+                $this->selectedSupplier->load('ledger.transactions');
+            }
+            $this->calculateStatistics();
+
+        } catch (\Exception $e) {
+            Log::error('Error deleting supplier transaction: ' . $e->getMessage());
+            $this->error('Error deleting transaction', $e->getMessage());
+        }
+    }
+
+    private function reverseManualTransaction($transaction)
+    {
+        $ledger = $transaction->ledger;
+
+        // 1. Create an opposite ledger transaction
+        $ledger->transactions()->create([
+            'date' => now(),
+            'type' => 'adjustment',
+            'description' => "Reversal of: " . $transaction->description,
+            'debit_amount' => $transaction->credit_amount,
+            'credit_amount' => $transaction->debit_amount,
+            'reference' => "REV-" . ($transaction->reference ?? $transaction->id),
+            'referenceable_type' => null,
+            'referenceable_id' => null,
+        ]);
+
+        // 2. Adjust Ledger Balance Directly
+        $ledger->current_balance += ($transaction->credit_amount - $transaction->debit_amount);
+        $ledger->save();
+
+        // 3. Find and Reverse Associated Cash Ledger Transactions
+        $cashTransactions = LedgerTransaction::where('referenceable_type', LedgerTransaction::class)
+            ->where('referenceable_id', $transaction->id)
+            ->get();
+
+        foreach ($cashTransactions as $cashTx) {
+            $cashTx->ledger->transactions()->create([
+                'date' => now(),
+                'type' => 'adjustment',
+                'description' => "Reversal of: " . $cashTx->description,
+                'debit_amount' => $cashTx->credit_amount,
+                'credit_amount' => $cashTx->debit_amount,
+                'reference' => "REV-" . ($cashTx->reference ?? $cashTx->id),
+                'referenceable_type' => null,
+                'referenceable_id' => null,
+            ]);
+
+            $cashTx->ledger->current_balance += ($cashTx->credit_amount - $cashTx->debit_amount);
+            $cashTx->ledger->save();
+        }
+
+        // 4. Find and Reverse Associated Bank Transactions
+        $bankTransactions = BankTransaction::where('transactionable_type', LedgerTransaction::class)
+            ->where('transactionable_id', $transaction->id)
+            ->get();
+
+        foreach ($bankTransactions as $bankTx) {
+            $bankTx->bankAccount->recordTransaction(
+                $bankTx->type === 'credit' ? 'debit' : 'credit',
+                $bankTx->amount,
+                "Reversal of: " . $bankTx->description,
+                [
+                    'transaction_date' => now(),
+                    'category' => 'reversal',
+                    'reference_number' => "REV-" . ($bankTx->reference_number ?? $bankTx->id),
+                ]
+            );
+        }
+
+        Log::info("Reversed manual supplier transaction ID: {$transaction->id}");
     }
 
     public function toggleStatus()

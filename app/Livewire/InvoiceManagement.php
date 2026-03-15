@@ -52,7 +52,7 @@ class InvoiceManagement extends Component
 
     // Monthly billing
     public $showMonthlyBillModal = false;
-    public $selectedClient = null;
+    public ?\App\Models\Client $selectedClient = null;
     public $monthlyBillPeriodFrom;
     public $monthlyBillPeriodTo;
     public $unbilledInvoices = [];
@@ -63,6 +63,7 @@ class InvoiceManagement extends Component
     public $paymentInvoice = null;
     public $paymentAmount = '';
     public $paymentMethod = 'cash';
+    public $paymentBankAccountId = null;
     public $paymentReference = '';
     public $paymentNotes = '';
 
@@ -109,8 +110,8 @@ class InvoiceManagement extends Component
 
         // Add these validation rules
         'coolieExpense' => 'nullable|numeric|min:0',
-        'invoicePaymentMethod' => 'required_if:invoiceType,cash|in:cash,bank',
-        'invoiceBankAccountId' => 'required_if:invoicePaymentMethod,bank|nullable|exists:company_bank_accounts,id',
+        'invoicePaymentMethod' => 'required_if:invoiceType,cash|in:cash,bank,upi,card,cheque',
+        'invoiceBankAccountId' => 'required_unless:invoicePaymentMethod,cash|nullable|exists:company_bank_accounts,id',
 
         'invoiceItems.*.product_id' => 'required|exists:products,id',
         'invoiceItems.*.quantity' => 'required|numeric|min:0.01',
@@ -525,8 +526,8 @@ class InvoiceManagement extends Component
                     'terms_conditions' => $this->termsConditions,
                     'created_by' => auth()->user()->name,
                     'coolie_expense' => $this->coolieExpense ?? 0,
-                    'payment_method' => $this->invoiceType === 'cash' ? $this->paymentMethod : null,
-                    'bank_account_id' => $this->invoiceType === 'cash' && $this->paymentMethod === 'bank' ? $this->bankAccountId : null,
+                    'payment_method' => $this->invoiceType === 'cash' ? $this->invoicePaymentMethod : null,
+                    'bank_account_id' => $this->invoiceType === 'cash' && $this->invoicePaymentMethod !== 'cash' ? $this->invoiceBankAccountId : null,
                 ]);
 
                 $subtotal = 0;
@@ -627,7 +628,7 @@ class InvoiceManagement extends Component
                 // Handle payment recording based on invoice type
                 if ($this->invoiceType === 'cash') {
                     // Cash invoice - record immediate payment
-                    if ($this->paymentMethod === 'cash') {
+                    if ($this->invoicePaymentMethod === 'cash') {
                         // Add full amount (including coolie) to cash ledger
                         $cashLedger->transactions()->create([
                             'date' => $this->invoiceDate,
@@ -642,14 +643,14 @@ class InvoiceManagement extends Component
 
                         $cashLedger->current_balance += $finalAmount;
                         $cashLedger->save();
-                    } elseif ($this->paymentMethod === 'bank') {
+                    } else {
                         // Add invoice amount to bank account
-                        $bankAccount = CompanyBankAccount::find($this->bankAccountId);
+                        $bankAccount = CompanyBankAccount::find($this->invoiceBankAccountId);
                         if ($bankAccount) {
                             $bankAccount->recordTransaction(
                                 'credit',
                                 $finalAmount,
-                                "Invoice payment - {$invoice->invoice_number}",
+                                "Invoice payment ({$this->invoicePaymentMethod}) - {$invoice->invoice_number}",
                                 [
                                     'transaction_date' => $this->invoiceDate,
                                     'category' => 'sales',
@@ -954,9 +955,11 @@ class InvoiceManagement extends Component
     public function closePaymentModal()
     {
         $this->showPaymentModal = false;
+        $this->showPaymentModal = false;
         $this->paymentInvoice = null;
         $this->paymentAmount = '';
         $this->paymentMethod = 'cash';
+        $this->paymentBankAccountId = null;
         $this->paymentReference = '';
         $this->paymentNotes = '';
         $this->resetValidation();
@@ -964,12 +967,18 @@ class InvoiceManagement extends Component
 
     public function savePayment()
     {
-        $this->validate([
-            'paymentAmount' => 'required|numeric|min:0.01|max:' . $this->paymentInvoice->balance_amount,
+        $rules = [
+            'paymentAmount' => 'required|numeric|min:0.01|max:' . ($this->paymentInvoice ? $this->paymentInvoice->balance_amount : 0),
             'paymentMethod' => 'required|in:cash,bank,upi,card,cheque',
             'paymentReference' => 'nullable|string|max:255',
             'paymentNotes' => 'nullable|string|max:500',
-        ]);
+        ];
+
+        if ($this->paymentMethod !== 'cash') {
+            $rules['paymentBankAccountId'] = 'required|exists:company_bank_accounts,id';
+        }
+
+        $this->validate($rules);
 
         try {
             DB::transaction(function () {
@@ -1006,40 +1015,61 @@ class InvoiceManagement extends Component
                         'debit_amount' => 0,
                         'credit_amount' => $this->paymentAmount,
                         'reference' => $this->paymentReference ?: "PAY-{$payment->id}",
+                        'referenceable_type' => InvoicePayment::class,
+                        'referenceable_id' => $payment->id,
                     ]);
 
                     // Update client ledger balance
                     $this->paymentInvoice->client->ledger->current_balance -= $this->paymentAmount;
                     $this->paymentInvoice->client->ledger->save();
+                }
 
-                    // ✅ NEW: Record cash/bank transaction
-                    if ($this->paymentMethod === 'cash') {
-                        // Get or create cash ledger
-                        $cashLedger = AccountLedger::firstOrCreate(
-                            ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
+                // ✅ Record cash/bank transaction (Regardless of attached client or walk-in)
+                $descriptionPrefix = $this->paymentInvoice->client_id ? $this->paymentInvoice->client->name : 'Walk-in Client';
+                
+                if ($this->paymentMethod === 'cash') {
+                    // Get or create cash ledger
+                    $cashLedger = AccountLedger::firstOrCreate(
+                        ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
+                        [
+                            'opening_balance' => 0,
+                            'opening_balance_type' => 'debit',
+                            'current_balance' => 0,
+                            'is_active' => true,
+                        ]
+                    );
+
+                    // Payment received = money IN (debit to cash)
+                    $cashLedger->transactions()->create([
+                        'date' => now(),
+                        'type' => 'payment',
+                        'description' => "Invoice payment - {$this->paymentInvoice->invoice_number} from {$descriptionPrefix}",
+                        'debit_amount' => $this->paymentAmount,
+                        'credit_amount' => 0,
+                        'reference' => $this->paymentReference ?: "PAY-{$payment->id}",
+                        'referenceable_type' => InvoicePayment::class,
+                        'referenceable_id' => $payment->id,
+                    ]);
+
+                    // Update cash balance
+                    $cashLedger->current_balance += $this->paymentAmount;
+                    $cashLedger->save();
+                } else {
+                    // Bank, UPI, Card, Cheque logic
+                    $bankAccount = CompanyBankAccount::find($this->paymentBankAccountId);
+                    if ($bankAccount) {
+                        $bankAccount->recordTransaction(
+                            'credit', // money coming in
+                            $this->paymentAmount,
+                            "Invoice payment ({$this->paymentMethod}) - {$this->paymentInvoice->invoice_number} from {$descriptionPrefix}",
                             [
-                                'opening_balance' => 0,
-                                'opening_balance_type' => 'debit',
-                                'current_balance' => 0,
-                                'is_active' => true,
+                                'transaction_date' => now(),
+                                'category' => 'sales',
+                                'reference_number' => $this->paymentReference ?: "PAY-{$payment->id}",
+                                'transactionable_type' => InvoicePayment::class,
+                                'transactionable_id' => $payment->id,
                             ]
                         );
-
-                        // Payment received = money IN (debit to cash)
-                        $cashLedger->transactions()->create([
-                            'date' => now(),
-                            'type' => 'payment',
-                            'description' => "Invoice payment - {$this->paymentInvoice->invoice_number} from {$this->paymentInvoice->client->name}",
-                            'debit_amount' => $this->paymentAmount,
-                            'credit_amount' => 0,
-                            'reference' => $this->paymentReference ?: "PAY-{$payment->id}",
-                            'referenceable_type' => InvoicePayment::class,
-                            'referenceable_id' => $payment->id,
-                        ]);
-
-                        // Update cash balance
-                        $cashLedger->current_balance += $this->paymentAmount;
-                        $cashLedger->save();
                     }
                 }
             });
@@ -1059,10 +1089,8 @@ class InvoiceManagement extends Component
         try {
             $invoice = Invoice::find($invoiceId);
 
-            if ($invoice->paid_amount > 0) {
-                $this->error('Cannot delete invoice with payments. Please refund payments first.');
-                return;
-            }
+            // Allow deleting paid invoices, the boot method will handle reversals
+
 
             DB::transaction(function () use ($invoice) {
                 // Mark as cancelled

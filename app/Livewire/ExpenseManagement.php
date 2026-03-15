@@ -25,7 +25,7 @@ class ExpenseManagement extends Component
     public $showExpenseModal = false;
     public $showCategoryModal = false;
     public $showViewModal = false;
-    public $editingExpense = null;
+    public ?\App\Models\Expense $editingExpense = null;
     public $viewingExpense = null;
 
     // Expense form properties
@@ -37,9 +37,9 @@ class ExpenseManagement extends Component
     public $paymentMethod = 'cash';
     public $referenceNumber = '';
     public $isBusinessExpense = true;
-    public $isReimbursable = false;
     public $reimbursedTo = '';
     public $receipt;
+    public $bankAccountId = null;
 
     // Category form properties
     public $categoryName = '';
@@ -72,6 +72,7 @@ class ExpenseManagement extends Component
         'isReimbursable' => 'boolean',
         'reimbursedTo' => 'nullable|string|max:255',
         'receipt' => 'nullable|file|max:5120|mimes:pdf,jpg,jpeg,png',
+        'bankAccountId' => 'required_unless:paymentMethod,cash|nullable|exists:company_bank_accounts,id',
     ];
 
     protected $messages = [
@@ -123,6 +124,7 @@ class ExpenseManagement extends Component
         $this->isReimbursable = false;
         $this->reimbursedTo = '';
         $this->receipt = null;
+        $this->bankAccountId = null;
     }
 
     public function saveExpense()
@@ -148,6 +150,7 @@ class ExpenseManagement extends Component
                     'is_reimbursable' => $this->isReimbursable,
                     'reimbursed_to' => $this->reimbursedTo,
                     'receipt_path' => $receiptPath,
+                    'bank_account_id' => $this->paymentMethod !== 'cash' ? $this->bankAccountId : null,
                     'created_by' => auth()->id(),
                 ];
 
@@ -193,26 +196,32 @@ class ExpenseManagement extends Component
             $this->isBusinessExpense = $this->editingExpense->is_business_expense;
             $this->isReimbursable = $this->editingExpense->is_reimbursable;
             $this->reimbursedTo = $this->editingExpense->reimbursed_to;
+            $this->bankAccountId = $this->editingExpense->bank_account_id;
 
             $this->showExpenseModal = true;
         }
     }
-
     public function deleteExpense($expenseId)
     {
         try {
-            $expense = Expense::find($expenseId);
+            DB::transaction(function () use ($expenseId) {
+                $expense = Expense::find($expenseId);
 
-            if ($expense) {
-                // Delete receipt file if exists
-                if ($expense->receipt_path) {
-                    Storage::disk('public')->delete($expense->receipt_path);
+                if ($expense) {
+                    if ($expense->approval_status === 'approved') {
+                        $this->reverseExpenseLedger($expense);
+                    }
+
+                    // Delete receipt file if exists
+                    if ($expense->receipt_path) {
+                        Storage::disk('public')->delete($expense->receipt_path);
+                    }
+
+                    $expense->delete();
+                    $this->success('Expense deleted successfully!');
+                    $this->calculateStats();
                 }
-
-                $expense->delete();
-                $this->success('Expense deleted successfully!');
-                $this->calculateStats();
-            }
+            });
         } catch (\Exception $e) {
             Log::error('Error deleting expense: ' . $e->getMessage());
             $this->error('Error deleting expense');
@@ -234,18 +243,63 @@ class ExpenseManagement extends Component
     public function approveExpense($expenseId)
     {
         try {
-            $expense = Expense::find($expenseId);
+            DB::transaction(function () use ($expenseId) {
+                $expense = Expense::find($expenseId);
 
-            if ($expense) {
-                $expense->update([
-                    'approval_status' => 'approved',
-                    'approved_by' => auth()->id(),
-                    'approved_at' => now(),
-                ]);
+                if ($expense && $expense->approval_status !== 'approved') {
+                    $expense->update([
+                        'approval_status' => 'approved',
+                        'approved_by' => auth()->id(),
+                        'approved_at' => now(),
+                    ]);
 
-                $this->success('Expense approved successfully!');
-                $this->calculateStats();
-            }
+                    // Deduct from ledger
+                    if ($expense->payment_method === 'cash') {
+                        $cashLedger = \App\Models\AccountLedger::firstOrCreate(
+                            ['ledger_type' => 'cash', 'ledger_name' => 'Cash in Hand'],
+                            [
+                                'opening_balance' => 0,
+                                'opening_balance_type' => 'debit',
+                                'current_balance' => 0,
+                                'is_active' => true,
+                            ]
+                        );
+
+                        $cashLedger->transactions()->create([
+                            'date' => $expense->expense_date ?? now(),
+                            'type' => 'expense',
+                            'description' => "Expense approved - {$expense->expense_title} ({$expense->expense_ref})",
+                            'debit_amount' => 0,
+                            'credit_amount' => $expense->amount,
+                            'reference' => $expense->expense_ref,
+                            'referenceable_type' => Expense::class,
+                            'referenceable_id' => $expense->id,
+                        ]);
+
+                        $cashLedger->current_balance -= $expense->amount;
+                        $cashLedger->save();
+                    } else if ($expense->bank_account_id) {
+                        $bankAccount = \App\Models\CompanyBankAccount::find($expense->bank_account_id);
+                        if ($bankAccount) {
+                            $bankAccount->recordTransaction(
+                                'debit', // money going out
+                                $expense->amount,
+                                "Expense approved ({$expense->payment_method}) - {$expense->expense_title} ({$expense->expense_ref})",
+                                [
+                                    'transaction_date' => $expense->expense_date ?? now(),
+                                    'category' => 'expense',
+                                    'reference_number' => $expense->expense_ref,
+                                    'transactionable_type' => Expense::class,
+                                    'transactionable_id' => $expense->id,
+                                ]
+                            );
+                        }
+                    }
+
+                    $this->success('Expense approved successfully!');
+                    $this->calculateStats();
+                }
+            });
         } catch (\Exception $e) {
             Log::error('Error approving expense: ' . $e->getMessage());
             $this->error('Error approving expense');
@@ -255,22 +309,57 @@ class ExpenseManagement extends Component
     public function rejectExpense($expenseId, $notes = '')
     {
         try {
-            $expense = Expense::find($expenseId);
+            DB::transaction(function () use ($expenseId, $notes) {
+                $expense = Expense::find($expenseId);
 
-            if ($expense) {
-                $expense->update([
-                    'approval_status' => 'rejected',
-                    'approved_by' => auth()->id(),
-                    'approved_at' => now(),
-                    'approval_notes' => $notes,
-                ]);
+                if ($expense) {
+                    if ($expense->approval_status === 'approved') {
+                        $this->reverseExpenseLedger($expense);
+                    }
 
-                $this->success('Expense rejected!');
-                $this->calculateStats();
-            }
+                    $expense->update([
+                        'approval_status' => 'rejected',
+                        'approved_by' => auth()->id(),
+                        'approved_at' => now(),
+                        'approval_notes' => $notes,
+                    ]);
+
+                    $this->success('Expense rejected!');
+                    $this->calculateStats();
+                }
+            });
         } catch (\Exception $e) {
             Log::error('Error rejecting expense: ' . $e->getMessage());
             $this->error('Error rejecting expense');
+        }
+    }
+
+    private function reverseExpenseLedger($expense)
+    {
+        // For cash, LedgerTransaction boot handles deleting, but we can also just record a reversal or delete it
+        if ($expense->payment_method === 'cash') {
+            $transaction = \App\Models\LedgerTransaction::where('referenceable_type', Expense::class)
+                ->where('referenceable_id', $expense->id)
+                ->first();
+            if ($transaction) {
+                $transaction->delete(); // Boot method recalculates balance
+            }
+        } else if ($expense->bank_account_id) {
+            $bankAccount = \App\Models\CompanyBankAccount::find($expense->bank_account_id);
+            if ($bankAccount) {
+                $bankAccount->recordTransaction(
+                    'credit', // money coming back in (reversal)
+                    $expense->amount,
+                    "Reversal: Expense rejected/deleted - {$expense->expense_title}",
+                    [
+                        'transaction_date' => now(),
+                        'category' => 'expense_reversal',
+                        'reference_number' => $expense->expense_ref,
+                        'transactionable_type' => Expense::class,
+                        'transactionable_id' => $expense->id,
+                    ]
+                );
+            }
         }
     }
 
@@ -397,6 +486,7 @@ class ExpenseManagement extends Component
                 'expenses' => $expenses,
                 'categories' => collect(),
                 'expenseCategories' => ExpenseCategory::active()->get(),
+                'bankAccounts' => \App\Models\CompanyBankAccount::active()->get(),
             ]);
         }
     }

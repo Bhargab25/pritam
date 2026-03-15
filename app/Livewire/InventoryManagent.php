@@ -17,6 +17,7 @@ use Maatwebsite\Excel\Facades\Excel;
 use App\Exports\StockReportExport;
 use Illuminate\Container\Attributes\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
 use Livewire\Attributes\Computed;
 
@@ -28,7 +29,7 @@ class InventoryManagent extends Component
     public $outOfStockCount = 0;
     public $totalItems = 0;
     public $totalValue = 0;
-    public $activeTab = 'inventory';
+    public $activeTab = 'inventory'; // Tabs: inventory, reports, purchases
 
     // Search and filters
     public $search = '';
@@ -40,19 +41,19 @@ class InventoryManagent extends Component
     // Selection
     public $selected = [];
 
-    // Modal properties
+    // Add Stock Modal
     public $showAddStockModal = false;
-    public $challanNumber = '';
-    public $challanDate = '';
-    public $supplierId = '';
-    public $remarks = '';
-
-    // Dynamic rows for products
-    public $stockItems = [];
+    public $challanNumber;
+    public $challanDate;
+    public $supplierId;
+    public $remarks;
+    public $stockItems = []; // Dynamic rows for products
+    public $isEditMode = false;
+    public $editingChallanId = null;
 
     // Product History Modal properties
     public $showHistoryModal = false;
-    public $selectedProduct = null;
+    public ?\App\Models\Product $selectedProduct = null;
     public $productHistory = [];
     public $historyActiveTab = 'movements';
 
@@ -117,6 +118,50 @@ class InventoryManagent extends Component
         $this->resetPage();
     }
 
+    public function deleteChallan($id)
+    {
+        try {
+            DB::transaction(function () use ($id) {
+                $challan = Challan::findOrFail($id);
+                // Deleting the challan will trigger its booted() deleting event
+                // which reverses stock and creates reversing ledger entries
+                $challan->delete();
+                Log::info("Deleted Challan {$challan->challan_number} via Inventory UI.");
+            });
+
+            $this->success('Purchase Deleted', 'The stock purchase has been successfully reversed/deleted.');
+            $this->calculateStats();
+
+        } catch (\Exception $e) {
+            Log::error('Error deleting challan: ' . $e->getMessage());
+            $this->error('Error deleting purchase', $e->getMessage());
+        }
+    }
+
+    public function editChallan($id)
+    {
+        $challan = Challan::with('items')->findOrFail($id);
+
+        $this->isEditMode = true;
+        $this->editingChallanId = $id;
+
+        $this->challanNumber = $challan->challan_number;
+        $this->challanDate = $challan->challan_date->format('Y-m-d');
+        $this->supplierId = $challan->supplier_id;
+        $this->remarks = $challan->remarks;
+
+        $this->stockItems = [];
+        foreach ($challan->items as $item) {
+            $this->stockItems[] = [
+                'product_id' => $item->product_id,
+                'quantity' => $item->quantity,
+                'price' => $item->price
+            ];
+        }
+
+        $this->showAddStockModal = true;
+    }
+
     public function updatedSearch()
     {
         $this->resetPage();
@@ -146,7 +191,11 @@ class InventoryManagent extends Component
     public function openAddStockModal()
     {
         $this->showAddStockModal = true;
-        $this->challanNumber = 'CH-' . now()->format('YmdHis');
+        
+        $this->isEditMode = false;
+        $this->editingChallanId = null;
+
+        $this->challanNumber = 'CH-' . strtoupper(Str::random(6));
         $this->challanDate = now()->format('Y-m-d');
         $this->supplierId = '';
         $this->remarks = '';
@@ -159,7 +208,7 @@ class InventoryManagent extends Component
     {
         $this->showAddStockModal = false;
         $this->resetValidation();
-        $this->reset(['challanNumber', 'challanDate', 'supplierId', 'remarks', 'stockItems']);
+        $this->reset(['challanNumber', 'challanDate', 'supplierId', 'remarks', 'stockItems', 'isEditMode', 'editingChallanId']);
     }
 
     public function addStockItem()
@@ -181,7 +230,15 @@ class InventoryManagent extends Component
 
         try {
             DB::transaction(function () {
-                // Create Challan
+                // If editing, fully reverse the old Challan first
+                if ($this->isEditMode && $this->editingChallanId) {
+                    $oldChallan = Challan::find($this->editingChallanId);
+                    if ($oldChallan) {
+                        $oldChallan->delete(); // This triggers booted() reversal
+                    }
+                }
+
+                // Create (or Re-create) Challan
                 $challan = Challan::create([
                     'challan_number' => $this->challanNumber,
                     'challan_date' => $this->challanDate,
@@ -244,12 +301,12 @@ class InventoryManagent extends Component
                 }
             });
 
-            $this->dispatch('success', message: 'Stock added successfully!');
+            $this->dispatch('success', message: $this->isEditMode ? 'Stock purchase updated successfully!' : 'Stock added successfully!');
             $this->closeAddStockModal();
             $this->calculateStats();
         } catch (\Exception $e) {
-            Log::error('Error adding stock: ' . $e->getMessage());
-            $this->dispatch('error', message: 'Error adding stock: ' . $e->getMessage());
+            Log::error('Error adding/updating stock: ' . $e->getMessage());
+            $this->dispatch('error', message: 'Error saving stock: ' . $e->getMessage());
         }
     }
 
@@ -616,6 +673,11 @@ class InventoryManagent extends Component
         $suppliers = Supplier::where('is_active', true)->get();
         $allProducts = Product::where('is_active', true)->get();
 
+        $challans = Challan::with(['supplier', 'items'])
+            ->orderBy('challan_date', 'desc')
+            ->orderBy('created_at', 'desc')
+            ->paginate($this->perPage, ['*'], 'challanPage');
+
         $headers = [
             ['label' => 'Sl No.', 'key' => 'sl_no', 'sortable' => false],
             ['label' => 'Product Name', 'key' => 'name', 'sortable' => true],
@@ -637,6 +699,7 @@ class InventoryManagent extends Component
             'categories' => $categories,
             'suppliers' => $suppliers,
             'allProducts' => $allProducts,
+            'challans' => $challans,
             'headers' => $headers,
             'row_decoration' => $row_decoration,
             'reportData' => $reportData,
