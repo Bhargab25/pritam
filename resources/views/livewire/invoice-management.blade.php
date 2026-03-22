@@ -298,12 +298,13 @@
                 class="btn-circle btn-ghost btn-xs text-success"
                 tooltip="Add Payment"
                 @click="$wire.openPaymentModal({{ $invoice->id }})" />
+            @endif
 
-            {{-- <x-mary-button
-                    icon="o-document-duplicate"
-                    class="btn-circle btn-ghost btn-xs text-secondary"
-                    tooltip="Duplicate Invoice"
-                    @click="$wire.duplicateInvoice({{ $invoice->id }})" /> --}}
+            <x-mary-button
+                icon="o-pencil"
+                class="btn-circle btn-ghost btn-xs text-info"
+                tooltip="Edit Invoice"
+                @click="$wire.editInvoice({{ $invoice->id }})" />
 
             <x-mary-button
                 icon="o-trash"
@@ -311,8 +312,6 @@
                 tooltip="Delete Invoice"
                 wire:confirm="Are you sure you want to delete this invoice?"
                 wire:click="deleteInvoice({{ $invoice->id }})" />
-
-            @endif
         </div>
         @endscope
     </x-mary-table>
@@ -322,7 +321,7 @@
 {{-- Invoice Modal --}}
 <x-mary-modal
     wire:model="showInvoiceModal"
-    title="Create {{ ucfirst($invoiceType) }} Invoice"
+    title="{{ $isEditMode ? 'Edit' : 'Create' }} {{ ucfirst($invoiceType) }} Invoice"
     box-class="backdrop-blur max-w-6xl max-h-[90vh] overflow-y-auto">
 
     <div class="space-y-6">

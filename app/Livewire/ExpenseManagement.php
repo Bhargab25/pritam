@@ -37,6 +37,7 @@ class ExpenseManagement extends Component
     public $paymentMethod = 'cash';
     public $referenceNumber = '';
     public $isBusinessExpense = true;
+    public $isReimbursable = false;
     public $reimbursedTo = '';
     public $receipt;
     public $bankAccountId = null;
